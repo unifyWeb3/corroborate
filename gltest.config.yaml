@@ -1,0 +1,10 @@
+networks:
+  default: localnet
+  localnet: {}
+  studio_devnet: {}
+  studionet: {}
+
+paths:
+  contracts: "contracts"
+
+environment: .env
