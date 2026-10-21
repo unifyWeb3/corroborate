@@ -104,6 +104,19 @@ def accounts_from(keys: dict) -> dict:
 # ------------------------------------------------------------------ helpers
 
 
+def retry(fn, label, tries=6, delay=5):
+    """The Studio RPC is reached over a flaky link; retry transport failures."""
+    last = None
+    for attempt in range(1, tries + 1):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            log(f"  {label} attempt {attempt} failed: {type(exc).__name__}: {str(exc)[:160]}")
+            time.sleep(delay)
+    raise last
+
+
 def wait(client, tx_hash, label, out: Path, tries: int = 40):
     say(out, f"  waiting for {label} {tx_hash}")
     deadline = time.time() + 300
@@ -122,17 +135,16 @@ def wait(client, tx_hash, label, out: Path, tries: int = 40):
     return None
 
 
-def contract_address_from_receipt(client, tx_hash):
-    """The deploy receipt carries a NewTransaction event with the new address."""
-    receipt = client.w3.eth.get_transaction_receipt(tx_hash)
-    abi = client.chain.consensus_main_contract["abi"]
-    consensus = client.w3.eth.contract(abi=abi)
-    event = consensus.get_event_by_name("NewTransaction")
-    for entry in event.process_receipt(receipt, errors="ignore"):
-        args = entry["args"]
-        for key in ("recipient", "contractAddress", "address"):
-            if key in args and args[key]:
-                return args[key]
+def contract_address_from_tx(client, tx_hash):
+    """The address of a freshly deployed contract.
+
+    The deploy transaction carries the new address in its decoded payload
+    (`contract_address`), so it is read back from the node instead of guessed."""
+    tx = client.get_transaction(tx_hash)
+    data = tx.get("data") or {}
+    address = data.get("contract_address")
+    if address:
+        return address
     return None
 
 
@@ -172,29 +184,41 @@ def main() -> int:
     say(out, "step 1: fund the test accounts")
     for name in ACCOUNT_NAMES:
         address = accts[name].address
-        response = client.provider.make_request(
-            method="sim_fundAccount", params=[address, FUND_AMOUNT]
+        response = retry(
+            lambda a=address: client.provider.make_request(
+                method="sim_fundAccount", params=[a, FUND_AMOUNT]
+            ),
+            f"sim_fundAccount {name}",
         )
         say(out, f"  sim_fundAccount {address} -> {json.dumps(response)[:200]}")
     for name in ACCOUNT_NAMES:
-        balance = client.w3.eth.get_balance(accts[name].address)
+        balance = retry(
+            lambda a=accts[name].address: client.w3.eth.get_balance(a),
+            f"balance {name}",
+        )
         say(out, f"  balance {name}: {balance} wei")
 
     # --------------------------------------------------------------- deploy
     say(out, "")
     say(out, "step 2: deploy contracts/corroborate.py")
     code = CONTRACT.read_text()
-    estimate = client.estimate_transaction_fees()
+    estimate = retry(lambda: client.estimate_transaction_fees(), "fee estimate")
     say(out, f"  fee policy enabled: {estimate['policy']['enabled']}")
     say(out, f"  fee value estimate: {estimate['feeValue']}")
-    deploy_tx = client.deploy_contract(
-        code=code,
-        account=accts["deployer"],
-        fees={"distribution": estimate["distribution"], "feeValue": estimate["feeValue"]},
+    deploy_tx = retry(
+        lambda: client.deploy_contract(
+            code=code,
+            account=accts["deployer"],
+            fees={
+                "distribution": estimate["distribution"],
+                "feeValue": estimate["feeValue"],
+            },
+        ),
+        "deploy",
     )
     say(out, f"  deploy tx: {deploy_tx}")
     wait(client, deploy_tx, "deploy", out)
-    address = contract_address_from_receipt(client, deploy_tx)
+    address = retry(lambda: contract_address_from_tx(client, deploy_tx), "contract address")
     if address is None:
         say(out, "  could not read the contract address from the receipt")
         return 1
@@ -203,7 +227,7 @@ def main() -> int:
     # ------------------------------------------------------- source identity
     say(out, "")
     say(out, "step 3: read the deployed source back and compare sha256")
-    remote = deployed_source(client, address)
+    remote = retry(lambda: deployed_source(client, address), "gen_getContractCode")
     remote_bytes = base64_decode(remote)
     local_bytes = code.encode("utf-8")
     remote_sha = hashlib.sha256(remote_bytes).hexdigest()
@@ -216,39 +240,37 @@ def main() -> int:
     say(out, "")
     say(out, "step 4: register a feed and refresh it")
     sources_json = json.dumps(FEED_SOURCES)
-    feed_estimate = client.estimate_transaction_fees_for_write(
-        address=address,
-        function_name="register_feed",
-        account=accts["deployer"],
-        args=[
-            "eur-usd",
-            "Euro per US dollar",
-            "EUR per USD",
-            150,
-            0,
-            172800,
-            2,
-            sources_json,
-        ],
+    feed_args = [
+        "eur-usd",
+        "Euro per US dollar",
+        "EUR per USD",
+        150,
+        0,
+        172800,
+        2,
+        sources_json,
+    ]
+    feed_estimate = retry(
+        lambda: client.estimate_transaction_fees_for_write(
+            address=address,
+            function_name="register_feed",
+            account=accts["deployer"],
+            args=feed_args,
+        ),
+        "register_feed estimate",
     )
-    register_tx = client.write_contract(
-        address=address,
-        function_name="register_feed",
-        account=accts["deployer"],
-        args=[
-            "eur-usd",
-            "Euro per US dollar",
-            "EUR per USD",
-            150,
-            0,
-            172800,
-            2,
-            sources_json,
-        ],
-        fees={
-            "distribution": feed_estimate["distribution"],
-            "feeValue": feed_estimate["feeValue"],
-        },
+    register_tx = retry(
+        lambda: client.write_contract(
+            address=address,
+            function_name="register_feed",
+            account=accts["deployer"],
+            args=feed_args,
+            fees={
+                "distribution": feed_estimate["distribution"],
+                "feeValue": feed_estimate["feeValue"],
+            },
+        ),
+        "register_feed",
     )
     say(out, f"  register_feed tx: {register_tx}")
     wait(client, register_tx, "register_feed", out)
@@ -259,64 +281,64 @@ def main() -> int:
         account=accts["deployer"],
         args=["eur-usd"],
     )
-    refresh_tx = client.write_contract(
-        address=address,
-        function_name="refresh",
-        account=accts["deployer"],
-        args=["eur-usd"],
-        fees={
-            "distribution": refresh_estimate["distribution"],
-            "feeValue": refresh_estimate["feeValue"],
-        },
+    refresh_tx = retry(
+        lambda: client.write_contract(
+            address=address,
+            function_name="refresh",
+            account=accts["deployer"],
+            args=["eur-usd"],
+            fees={
+                "distribution": refresh_estimate["distribution"],
+                "feeValue": refresh_estimate["feeValue"],
+            },
+        ),
+        "refresh",
     )
     say(out, f"  refresh tx: {refresh_tx}")
     wait(client, refresh_tx, "refresh", out)
 
-    record = client.read_contract(
-        address=address, function_name="latest", args=["eur-usd"]
+    record = retry(
+        lambda: client.read_contract(
+            address=address, function_name="latest", args=["eur-usd"]
+        ),
+        "latest",
     )
     say(out, "  latest(eur-usd):")
     say(out, "    " + json.dumps(record, indent=2, default=str).replace("\n", "\n    "))
-    trustworthy = client.read_contract(
-        address=address, function_name="is_trustworthy", args=["eur-usd", 3600]
+    trustworthy = retry(
+        lambda: client.read_contract(
+            address=address, function_name="is_trustworthy", args=["eur-usd", 3600]
+        ),
+        "is_trustworthy",
     )
     say(out, f"  is_trustworthy(eur-usd, 3600): {trustworthy}")
-    status = client.read_contract(address=address, function_name="status", args=["eur-usd"])
+    status = retry(
+        lambda: client.read_contract(
+            address=address, function_name="status", args=["eur-usd"]
+        ),
+        "status",
+    )
     say(out, f"  status(eur-usd): {status}")
 
     # ------------------------------------------------------------ refusals
     say(out, "")
     say(out, "step 5: live refusals")
-    refusal_estimate = client.estimate_transaction_fees_for_write(
-        address=address,
-        function_name="register_feed",
-        account=accts["alice"],
-        args=[
-            "rogue",
-            "rogue",
-            "EUR",
-            150,
-            0,
-            172800,
-            2,
-            sources_json,
-        ],
+    rogue_args = ["rogue", "rogue", "EUR", 150, 0, 172800, 2, sources_json]
+    refusal_estimate = retry(
+        lambda: client.estimate_transaction_fees_for_write(
+            address=address,
+            function_name="register_feed",
+            account=accts["alice"],
+            args=rogue_args,
+        ),
+        "refusal estimate",
     )
     try:
         client.write_contract(
             address=address,
             function_name="register_feed",
             account=accts["alice"],
-            args=[
-                "rogue",
-                "rogue",
-                "EUR",
-                150,
-                0,
-                172800,
-                2,
-                sources_json,
-            ],
+            args=rogue_args,
             fees={
                 "distribution": refusal_estimate["distribution"],
                 "feeValue": refusal_estimate["feeValue"],
@@ -326,18 +348,22 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         say(out, f"  non-curator register_feed rejected: {type(exc).__name__}: {exc}")
 
-    bad_estimate = client.estimate_transaction_fees_for_write(
-        address=address,
-        function_name="register_feed",
-        account=accts["deployer"],
-        args=["bad", "bad", "EUR", 150, 0, 172800, 2, "not json"],
+    bad_args = ["bad", "bad", "EUR", 150, 0, 172800, 2, "not json"]
+    bad_estimate = retry(
+        lambda: client.estimate_transaction_fees_for_write(
+            address=address,
+            function_name="register_feed",
+            account=accts["deployer"],
+            args=bad_args,
+        ),
+        "bad input estimate",
     )
     try:
         client.write_contract(
             address=address,
             function_name="register_feed",
             account=accts["deployer"],
-            args=["bad", "bad", "EUR", 150, 0, 172800, 2, "not json"],
+            args=bad_args,
             fees={
                 "distribution": bad_estimate["distribution"],
                 "feeValue": bad_estimate["feeValue"],
