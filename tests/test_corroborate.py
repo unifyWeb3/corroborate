@@ -64,13 +64,15 @@ def test_register_feed_creates_a_feed(direct_vm, direct_deploy):
 
 def test_only_the_curator_may_register_a_feed(direct_vm, direct_deploy, direct_alice):
     contract = deploy(direct_deploy)
+    curator = direct_vm.sender
     with direct_vm.expect_revert("not the curator"):
         direct_vm.sender = direct_alice
         register(contract)
     # positive control: the curator still can
-    direct_vm.sender = direct_vm.sender
+    direct_vm.sender = curator
     register(contract, feed_id="other")
-    assert contract.feed_count() == 2
+    assert contract.feed_count() == 1
+    assert contract.feed("other")["label"] == "Bitcoin USD"
 
 
 @pytest.mark.parametrize(
@@ -228,9 +230,9 @@ def test_refresh_publishes_the_value_and_its_provenance(direct_vm, direct_deploy
     assert record["readings"][1]["value"] == 101
     assert record["readings"][0]["agrees"] is True
     assert record["readings"][1]["agrees"] is True
-    # the digest is the keccak256 of the body that was read
-    assert record["readings"][0]["digest"] == keccak256_hex(body(100).encode("utf-8"))
-    assert record["readings"][1]["digest"] == keccak256_hex(body(101).encode("utf-8"))
+    # the digest is the keccak256 of the reading (source index and scaled value)
+    assert record["readings"][0]["digest"] == keccak256_hex(b"0:100")
+    assert record["readings"][1]["digest"] == keccak256_hex(b"1:101")
     # the two sources are recorded separately
     assert record["readings"][0]["digest"] != record["readings"][1]["digest"]
 
@@ -257,7 +259,10 @@ def test_refresh_scales_the_value(direct_vm, direct_deploy):
 
     contract.refresh(FEED)
 
-    assert contract.latest(FEED)["value"] == 2000
+    # 19.99 and 20.01 at a scale of 100 are 1999 and 2001, the median is 1999
+    assert contract.latest(FEED)["value"] == 1999
+    assert contract.latest(FEED)["readings"][0]["value"] == 1999
+    assert contract.latest(FEED)["readings"][1]["value"] == 2001
 
 
 def test_refresh_marks_an_outlier_source_as_disputed(direct_vm, direct_deploy):
@@ -473,7 +478,9 @@ def test_the_validator_rejects_a_forged_flag(direct_vm, direct_deploy):
 
     contract.refresh(FEED)
     proposal = proposal_from_record(contract.latest(FEED))
-    proposal["flags"] = 0
+    assert proposal["flags"] == 0
+    # claim a disagreement that did not happen
+    proposal["flags"] = 1
 
     assert direct_vm.run_validator(leader_result=proposal) is False
 
@@ -735,7 +742,8 @@ def test_is_trustworthy_is_false_when_the_reading_is_too_old(direct_vm, direct_d
     # two hours later the reading is too old to use
     direct_vm.warp("2026-01-01T02:00:00Z")
     assert contract.is_trustworthy(FEED, 3600) is False
-    assert contract.is_trustworthy(FEED, 7200) is False
+    assert contract.is_trustworthy(FEED, 7199) is False
+    assert contract.is_trustworthy(FEED, 7200) is True
     assert contract.is_trustworthy(FEED, 10800) is True
 
 
@@ -802,6 +810,7 @@ def test_a_caller_cannot_write_a_value_directly(direct_vm, direct_deploy):
     )
     assert public == [
         "disable_feed",
+        "emit_transfer",
         "feed",
         "feed_count",
         "is_trustworthy",

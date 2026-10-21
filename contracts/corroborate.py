@@ -1,4 +1,4 @@
-# { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
+# { "Depends": "py-genlayer:babwp9t37jw9g4j2bccgn14g6x7x9s1f7dsmh7emvz735pz4zxa0" }
 """
 corroborate - a tolerance-consensus data feed with provenance.
 
@@ -23,10 +23,12 @@ The read side is deliberately small: `latest`, `value`, `status` and `is_trustwo
 the last one being the guard a consuming contract should use.
 """
 
-from genlayer import *
+import genlayer as gl
+from genlayer.storage import DynArray, TreeMap, allow
+from genlayer.types import u32, u64, i64, Address
 from dataclasses import dataclass
-import json
 from datetime import datetime, timezone
+import json
 
 # --------------------------------------------------------------------- limits
 
@@ -62,7 +64,8 @@ REASON_OVERSIZE = 6
 
 # ------------------------------------------------------------------- storage
 
-@allow_storage
+
+@allow
 @dataclass
 class Source:
     url: str
@@ -71,7 +74,7 @@ class Source:
     scale: u32
 
 
-@allow_storage
+@allow
 @dataclass
 class Feed:
     label: str
@@ -85,7 +88,7 @@ class Feed:
     disabled: bool
 
 
-@allow_storage
+@allow
 @dataclass
 class Reading:
     index: u32
@@ -95,7 +98,7 @@ class Reading:
     agrees: bool
 
 
-@allow_storage
+@allow
 @dataclass
 class Record:
     value: i64
@@ -113,9 +116,16 @@ class Record:
 
 
 def now_ts() -> int:
-    """The transaction timestamp. Inside the GenVM the clock is pinned to it, so every
-    node that re-executes this transaction sees exactly this value."""
-    return int(datetime.now(timezone.utc).timestamp())
+    """The transaction timestamp.
+
+    In the deterministic context `gl.vm.get_timestamp()` is the transaction timestamp,
+    and it is the same value on the leader and on every validator that re-executes the
+    transaction, so it can be stored and re-checked.  The standard library clock is
+    wired to the same value, and is used as a fallback."""
+    stamp = gl.vm.get_timestamp()
+    if stamp is None:
+        stamp = datetime.now(timezone.utc)
+    return int(stamp.timestamp())
 
 
 def is_word_char(ch: str) -> bool:
@@ -223,9 +233,16 @@ def to_scaled(raw, scale: int):
     return True, value
 
 
-def digest_of(body: bytes) -> str:
-    hasher = Keccak256()
-    hasher.update(body)
+def digest_of(index: int, value: int) -> str:
+    """The digest of a reading: which source produced it and what it produced.
+
+    It is deliberately *not* a digest of the raw response body.  A page that changes
+    between the leader's read and the validator's read would give two different body
+    digests even though both read the same value, and a digest that the committee
+    cannot confirm is a leader claim, not a verified fact.  The reading digest is
+    computed by the committee on both sides and must be identical."""
+    hasher = gl.Keccak256()
+    hasher.update(f"{index}:{value}".encode("utf-8"))
     return hasher.hexdigest()
 
 
@@ -256,7 +273,7 @@ def status_text(flags: int) -> str:
 # ------------------------------------------------------------------ contract
 
 
-class Corroborate(gl.Contract):
+class Corroborate(gl.contract.Contract):
     """A tolerance-consensus data feed with provenance."""
 
     owner: Address
@@ -451,10 +468,10 @@ class Corroborate(gl.Contract):
                 readings, sources, tol_rel, tol_abs, max_age, quorum, read_at
             )
 
-        def validator_fn(leader_result) -> bool:
-            if not isinstance(leader_result, gl.vm.Return):
+        def validator_fn(result) -> bool:
+            if not isinstance(result, gl.vm.Return):
                 return False
-            proposal = leader_result.calldata
+            proposal = result.calldata
             if not isinstance(proposal, dict):
                 return False
             mine = fetch_sources(sources)
@@ -462,7 +479,7 @@ class Corroborate(gl.Contract):
                 proposal, mine, sources, tol_rel, tol_abs, max_age, quorum, read_at
             )
 
-        proposal = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+        proposal = gl.vm.run_nondet(leader_fn, validator_fn)
 
         # Only now, after the committee accepted the proposal, is anything written.
         self.records[feed_id] = self._record_from_proposal(proposal, feed)
@@ -647,7 +664,6 @@ def fetch_sources(sources: list) -> list:
             entry["reason"] = REASON_OVERSIZE
             out.append(entry)
             continue
-        entry["digest"] = digest_of(body)
         try:
             document = json.loads(body.decode("utf-8"))
         except Exception:
@@ -677,6 +693,7 @@ def fetch_sources(sources: list) -> list:
             entry["data_ts"] = raw_ts
         entry["ok"] = True
         entry["value"] = scaled
+        entry["digest"] = digest_of(i, scaled)
         entry["reason"] = REASON_OK
         out.append(entry)
     return out
@@ -808,11 +825,9 @@ def verify_proposal(
             return False
         if not within(int(entry["value"]), int(own["value"]), tol_abs, tol_rel):
             return False
-        if entry["digest"] != own["digest"]:
-            # The body moved between the two reads.  That is only acceptable when the
-            # value that was derived from it did not move.
-            if int(entry["value"]) != int(own["value"]):
-                return False
+        if entry["digest"] != digest_of(index, int(own["value"])):
+            # The leader reports a reading the validator did not make.
+            return False
         if abs(int(entry["data_ts"]) - int(own["data_ts"])) > TS_TOL_SECONDS:
             return False
 
