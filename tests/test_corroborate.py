@@ -375,6 +375,13 @@ def test_a_reading_without_a_quorum_is_rejected_by_the_committee(direct_vm, dire
 
     assert direct_vm.run_validator() is False
 
+    # positive control: the same feed with a quorum that is met is accepted
+    register(contract, feed_id="q2", tol_rel_bps=1, quorum=1)
+    mock(direct_vm, r"one\.example\.test", body(100))
+    mock(direct_vm, r"two\.example\.test", body(200))
+    contract.refresh("q2")
+    assert direct_vm.run_validator() is True
+
 
 def test_a_quorum_of_one_survives_a_disagreeing_source(direct_vm, direct_deploy):
     contract = deploy(direct_deploy)
@@ -650,6 +657,152 @@ def test_a_fresh_source_is_not_flagged(direct_vm, direct_deploy):
     assert record["flags"] == 0
     assert record["status"] == "agreed"
     assert record["data_ts"] == fresh_ts
+
+
+def test_the_validator_rejects_a_forged_per_source_verdict(direct_vm, direct_deploy):
+    """The per source verdict is checked too, not only the count."""
+    contract = deploy(direct_deploy)
+    register(contract, sources=three_sources())
+    mock(direct_vm, r"one\.example\.test", body(100))
+    mock(direct_vm, r"two\.example\.test", body(101))
+    mock(direct_vm, r"three\.example\.test", body(5))
+
+    contract.refresh(FEED)
+    proposal = proposal_from_record(contract.latest(FEED))
+    # the outlier is the third source; claim that it agrees
+    outlier = [r for r in proposal["readings"] if r["value"] == 5][0]
+    assert outlier["agrees"] is False
+    outlier["agrees"] = True
+
+    assert direct_vm.run_validator(leader_result=proposal) is False
+
+
+def test_the_validator_rejects_a_leader_that_hid_a_dissent(direct_vm, direct_deploy):
+    """A source the leader left out but the validator could read, and which disagrees
+    with the aggregate, is a hidden dissent: the proposal is rejected."""
+    contract = deploy(direct_deploy)
+    register(contract, sources=three_sources())
+    mock(direct_vm, r"one\.example\.test", body(100))
+    mock(direct_vm, r"two\.example\.test", body(101))
+    mock(direct_vm, r"three\.example\.test", body(5))
+
+    contract.refresh(FEED)
+    proposal = proposal_from_record(contract.latest(FEED))
+    # the leader drops the dissenting third source and adjusts its counts
+    proposal["readings"] = [r for r in proposal["readings"] if r["value"] != 5]
+    proposal["sources_read"] = 2
+    proposal["agree_count"] = 2
+    proposal["flags"] = 2  # PARTIAL
+
+    assert direct_vm.run_validator(leader_result=proposal) is False
+
+
+def test_the_validator_accepts_a_leader_that_dropped_an_agreeing_source(
+    direct_vm, direct_deploy
+):
+    """A source the leader could not read, which the validator read and which agrees
+    with the aggregate, is harmless: the record is simply partial."""
+    contract = deploy(direct_deploy)
+    register(contract, sources=three_sources())
+    mock(direct_vm, r"one\.example\.test", body(100))
+    mock(direct_vm, r"two\.example\.test", body(101))
+    # the third source is never mocked: the leader cannot read it either
+
+    contract.refresh(FEED)
+    proposal = proposal_from_record(contract.latest(FEED))
+    assert proposal["sources_read"] == 2
+    assert proposal["flags"] == 2
+
+    # the validator reads it as well, and it agrees with the aggregate
+    direct_vm.clear_mocks()
+    mock(direct_vm, r"one\.example\.test", body(100))
+    mock(direct_vm, r"two\.example\.test", body(101))
+    mock(direct_vm, r"three\.example\.test", body(100))
+
+    assert direct_vm.run_validator(leader_result=proposal) is True
+
+
+# ------------------------------------------------------------- extraction
+
+
+def test_refresh_reads_a_value_out_of_an_array(direct_vm, direct_deploy):
+    contract = deploy(direct_deploy)
+    register(
+        contract,
+        sources=sources_json(
+            source("https://one.example.test/price", "price.0"),
+            source("https://two.example.test/price", "price.0"),
+        ),
+    )
+    mock(direct_vm, r"one\.example\.test", '{"price": [7, 42]}')
+    mock(direct_vm, r"two\.example\.test", '{"price": [7, 43]}')
+
+    contract.refresh(FEED)
+
+    record = contract.latest(FEED)
+    assert record["readings"][0]["value"] == 7
+    assert record["readings"][1]["value"] == 7
+
+
+def test_refresh_rounds_a_float_to_the_declared_scale(direct_vm, direct_deploy):
+    contract = deploy(direct_deploy)
+    register(contract, sources=two_sources(scale=100))
+    mock(direct_vm, r"one\.example\.test", '{"price": 1.5}')
+    mock(direct_vm, r"two\.example\.test", '{"price": 1.5}')
+
+    contract.refresh(FEED)
+
+    assert contract.latest(FEED)["value"] == 150
+
+
+def test_refresh_treats_a_boolean_as_a_failed_source(direct_vm, direct_deploy):
+    contract = deploy(direct_deploy)
+    register(contract, sources=three_sources())
+    mock(direct_vm, r"one\.example\.test", '{"price": 100}')
+    mock(direct_vm, r"two\.example\.test", '{"price": 101}')
+    mock(direct_vm, r"three\.example\.test", '{"price": true}')
+
+    contract.refresh(FEED)
+
+    record = contract.latest(FEED)
+    assert record["sources_read"] == 2
+    assert record["status"] == "partial"
+
+
+def test_refresh_treats_a_non_numeric_value_as_a_failed_source(direct_vm, direct_deploy):
+    contract = deploy(direct_deploy)
+    register(contract, sources=three_sources())
+    mock(direct_vm, r"one\.example\.test", '{"price": 100}')
+    mock(direct_vm, r"two\.example\.test", '{"price": 101}')
+    mock(direct_vm, r"three\.example\.test", '{"price": "not a number"}')
+
+    contract.refresh(FEED)
+
+    assert contract.latest(FEED)["sources_read"] == 2
+
+
+def test_refresh_treats_an_out_of_range_value_as_a_failed_source(direct_vm, direct_deploy):
+    contract = deploy(direct_deploy)
+    register(contract, sources=three_sources())
+    mock(direct_vm, r"one\.example\.test", '{"price": 100}')
+    mock(direct_vm, r"two\.example\.test", '{"price": 101}')
+    mock(direct_vm, r"three\.example\.test", '{"price": 99999999999999999999999}')
+
+    contract.refresh(FEED)
+
+    assert contract.latest(FEED)["sources_read"] == 2
+
+
+def test_refresh_treats_an_oversize_body_as_a_failed_source(direct_vm, direct_deploy):
+    contract = deploy(direct_deploy)
+    register(contract, sources=three_sources())
+    mock(direct_vm, r"one\.example\.test", '{"price": 100}')
+    mock(direct_vm, r"two\.example\.test", '{"price": 101}')
+    mock(direct_vm, r"three\.example\.test", '{"price": 102, "pad": "%s"}' % ("x" * 40000))
+
+    contract.refresh(FEED)
+
+    assert contract.latest(FEED)["sources_read"] == 2
 
 
 # ------------------------------------------------------------- the guard

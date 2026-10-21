@@ -782,8 +782,8 @@ def verify_proposal(
     """The validator: re-derive everything and check the leader's proposal.
 
     Nothing the leader says is taken on trust.  Every per-source value is compared with
-    the value this validator read itself, every digest with the digest of the body this
-    validator read itself, and every aggregate with the aggregate this validator
+    the value this validator read itself, every digest with the digest of the reading
+    this validator made itself, and every aggregate with the aggregate this validator
     computed itself."""
     for key in (
         "value",
@@ -852,6 +852,26 @@ def verify_proposal(
         return False
     if my_agree < quorum:
         return False
+
+    # The per source verdict must be this validator's own verdict, not the leader's.
+    for entry in table:
+        index = int(entry["index"])
+        own = my_by_index[index]
+        mine_agrees = within(int(own["value"]), my_median, tol_abs, tol_rel)
+        if bool(entry["agrees"]) != mine_agrees:
+            return False
+
+    # A source the leader did not report but this validator could read: if it
+    # disagrees with the aggregate, the leader left out a dissent.  A source this
+    # validator could not read either is not held against the leader.
+    for index in range(len(sources)):
+        if index in seen:
+            continue
+        own = my_by_index.get(index)
+        if own is None or not own["ok"]:
+            continue
+        if not within(int(own["value"]), int(proposal["value"]), tol_abs, tol_rel):
+            return False
 
     # Recompute the flags.
     my_stale = False
