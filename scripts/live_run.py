@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SECRETS = ROOT / "secrets"
 KEYS_FILE = SECRETS / "keys.json"
 CONTRACT = ROOT / "contracts" / "corroborate.py"
-ARTIFACTS = ROOT / "artifacts"
+ARTIFACTS = ROOT / "transcripts"
 
 ACCOUNT_NAMES = ["deployer", "alice", "bob"]
 FUND_AMOUNT = 100 * 10**18
@@ -259,8 +259,7 @@ def main() -> int:
         172800,
         2,
         sources_json,
-    ]
-    # The Studio simulator on this release candidate does not answer sim_call, so the
+    ]    # The Studio simulator on this release candidate does not answer sim_call, so the
     # fee estimate is built from the network policy instead of from a simulation, and
     # the execution budget is raised for the calls that do web requests.
     feed_estimate = retry(
@@ -329,6 +328,96 @@ def main() -> int:
         "status",
     )
     say(out, f"  status(eur-usd): {status}")
+
+    # ------------------------------------------- a source that cannot be read
+    say(out, "")
+    say(out, "step 4b: the same feed with one unreachable source")
+    partial_sources = list(FEED_SOURCES) + [
+        {
+            "url": "https://this-host-does-not-exist.invalid/price",
+            "value_path": "rates.EUR",
+            "time_path": "",
+            "scale": 100000,
+        }
+    ]
+    partial_args = [
+        "eur-usd-partial",
+        "Euro per US dollar, one unreachable source",
+        "EUR per USD",
+        150,
+        0,
+        172800,
+        2,
+        json.dumps(partial_sources),
+    ]
+    partial_estimate = retry(
+        lambda: client.estimate_transaction_fees(
+            options={"executionBudgetPerRound": 10 * 10**17}
+        ),
+        "partial feed estimate",
+    )
+    partial_register_tx = retry(
+        lambda: client.write_contract(
+            address=address,
+            function_name="register_feed",
+            account=accts["deployer"],
+            args=partial_args,
+            fees={
+                "distribution": partial_estimate["distribution"],
+                "feeValue": partial_estimate["feeValue"],
+            },
+        ),
+        "register partial feed",
+    )
+    say(out, f"  register_feed (partial) tx: {partial_register_tx}")
+    wait(client, partial_register_tx, "register partial feed", out)
+
+    partial_refresh_estimate = retry(
+        lambda: client.estimate_transaction_fees(
+            options={"executionBudgetPerRound": 10 * 10**17}
+        ),
+        "partial refresh estimate",
+    )
+    partial_refresh_tx = retry(
+        lambda: client.write_contract(
+            address=address,
+            function_name="refresh",
+            account=accts["deployer"],
+            args=["eur-usd-partial"],
+            fees={
+                "distribution": partial_refresh_estimate["distribution"],
+                "feeValue": partial_refresh_estimate["feeValue"],
+            },
+        ),
+        "partial refresh",
+    )
+    say(out, f"  refresh (partial) tx: {partial_refresh_tx}")
+    wait(client, partial_refresh_tx, "partial refresh", out)
+
+    partial_record = retry(
+        lambda: client.read_contract(
+            address=address, function_name="latest", args=["eur-usd-partial"]
+        ),
+        "latest partial",
+    )
+    say(out, "  latest(eur-usd-partial):")
+    say(out, "    " + json.dumps(partial_record, indent=2, default=str).replace("\n", "\n    "))
+    partial_trustworthy = retry(
+        lambda: client.read_contract(
+            address=address,
+            function_name="is_trustworthy",
+            args=["eur-usd-partial", 3600],
+        ),
+        "is_trustworthy partial",
+    )
+    say(out, f"  is_trustworthy(eur-usd-partial, 3600): {partial_trustworthy}")
+    partial_status = retry(
+        lambda: client.read_contract(
+            address=address, function_name="status", args=["eur-usd-partial"]
+        ),
+        "status partial",
+    )
+    say(out, f"  status(eur-usd-partial): {partial_status}")
 
     # ------------------------------------------------------------ refusals
     say(out, "")

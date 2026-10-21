@@ -187,18 +187,33 @@ Attacked the diff as an adversary; every finding was fixed with a test:
 * Network: **studio-dev** (chain 61997), canonical RPC `https://studio-dev.genlayer.com/api`.
 * Keys: three throwaway accounts in `secrets/keys.json` (git ignored, mode 600, addresses
   only in the docs).  Funded with `sim_fundAccount`; no human step was needed.
-* Deployed: `0xAb8eeAE77c55dFDFA1cdD945A5100bae3CaAa117`, tx
-  `0xfc6ae8665944b22153bc1b365e56d9d1acc2b14c35f1a742e3f1f6e8836855a6`.
+* Deployed: `0x81ffeD2e3b5558e67D6dCEa79B5Cead6E247d68F`, tx
+  `0x769efbd55e18e256468de8e88bf25f598a766525be730bb3ff3450c2f2c76ee8`.
 * Source read back with `gen_getContractCode`: sha256
   `a9081ddfc22aafe1055c043d815be785fc5bddfc3fe94cf91986c3948aaf3796` on both sides, 29983
   bytes, byte identical.
-* `register_feed` tx `0xdb09ce622c6583cb8878a190597f86db79b3e3868d528d7782f36b56262ccd62`,
-  `refresh` tx `0xeaf6f8cedffebeedde0cc1c3c696a2050cd156a36734664b02486779ea6d5164` against
+* `register_feed` tx `0x311925540feea6c654c60524c68d6abed6978a84b5ad170839130d2860301bc5`,
+  `refresh` tx `0xd6b9b9129c00982c27dae03ee09bb7d677dcbb34086c814fcd71147aecbe6aaf` against
   three real public FX providers: value 89015, all three agree, status `agreed`,
   `is_trustworthy` true.
+* A second feed with a fourth, unreachable source produced the `partial` status and
+  `is_trustworthy = false` in the same run.
 * Refusals: a non-curator `register_feed` rolled back with `not the curator`, a malformed
-  source list rolled back with `invalid sources`, and `feed_count` stayed at 1.
-* An earlier run produced a `partial` record when one provider was unreachable from the
-  node: the reading was published with the gap disclosed and the guard refused it.
+  source list rolled back with `invalid sources`, and `feed_count` showed only the two
+  curator registered feeds.
 * **No validator disagreement was observed live.**  The rejection path is covered by the unit
   tests only, and `docs/LIVE-RUN.md` says so.
+
+## STAGE 5 - repository
+
+* Pre-push sweep (`scripts/pre_push_sweep.py`): no key file tracked, every 64 hex candidate
+  in the working tree and in every ref compared against the three real private keys (no
+  match), no endpoint secret, no other project's name.  The forbidden name list is read
+  from a file outside the repository so that the repository never names another project.
+* Public repository created: **https://github.com/unifyWeb3/corroborate** (default branch
+  `main`), MIT licence, no frontend, no secrets.
+* `README.md`, `docs/CONSENSUS.md`, `docs/LIVE-RUN.md`, `state/DESIGN.md`,
+  `state/MEMORY.md`, `submission/contribution-text.md` (a detailed version and a 994
+  character lowercase version) are in the repository.
+* The submission text was **not** submitted anywhere; it is in the repository for the user
+  to paste.

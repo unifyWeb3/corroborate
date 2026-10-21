@@ -66,7 +66,7 @@ publishes, declared per source. One trusted key is still one key.
 
 **Network and address.** Studio development preview (release candidate), chain ID 61997,
 canonical RPC `https://studio-dev.genlayer.com/api`. Deployed contract
-`0xAb8eeAE77c55dFDFA1cdD945A5100bae3CaAa117`. The deployed source was read back with
+`0x81ffeD2e3b5558e67D6dCEa79B5Cead6E247d68F`. The deployed source was read back with
 `gen_getContractCode` and is byte-for-byte the file in the repository (sha256
 `a9081ddfc22aafe1055c043d815be785fc5bddfc3fe94cf91986c3948aaf3796`).
 
@@ -96,7 +96,7 @@ committee reject a correct reading; the result is a rotation, not a wrong number
 
 ---
 
-## Short version (993 characters, lowercase)
+## Short version (994 characters, lowercase)
 
 ```
 corroborate lets other genlayer contracts read a web number, with the evidence that it was corroborated.
@@ -105,7 +105,7 @@ a curator declares a feed: 2 to 8 https sources, a json path each, a tolerance, 
 
 no language model: the check is integer arithmetic over independently read values. disagreement is a result, not an error: a dissenting source is kept and flagged, an unreadable one flagged partial, no quorum means no publication.
 
-deployed on studio dev preview, chain id 61997, at 0xab8eeae77c55fdfa1cdd945a5100bae3caaa117; the source reads back byte for byte as the repo.
+deployed on studio dev preview, chain id 61997, at 0x81ffed2e3b5558e67d6dcea79b5cead6e247d68f; the source reads back byte for byte as the repo.
 
 78 unit tests pass, each refusal has a positive control. repo: https://github.com/unifyWeb3/corroborate
 ```

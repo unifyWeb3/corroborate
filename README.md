@@ -5,14 +5,14 @@
 `corroborate` turns "read a number from the web" into a number that a committee of
 validators re-derived from the same sources, within a tolerance the feed declares, and
 that comes back with the evidence: which sources agreed, the keccak256 digest of every
-body that was read, the source's own timestamp and the read time.
+reading, the source's own timestamp and the read time.
 
 It is a primitive, not an application.  Another contract asks it for a number and gets a
 number plus the agreement status it needs to decide whether to use it.
 
 ```python
-feed = gl.get_contract_at(FEED_ADDRESS)
-view = feed.view(state=StorageType.LATEST_FINAL)
+feed = gl.contract.get_at(FEED_ADDRESS)
+view = feed.view(state=StorageView.LATEST_FINALIZED)
 if view.is_trustworthy("eur-usd", 3600):
     price = view.value("eur-usd")
 ```
@@ -117,16 +117,16 @@ indices).  A path that is not present makes that source fail - it is never silen
 `contracts/example_consumer.py` is a complete consumer:
 
 ```python
-from genlayer import *
-from genlayer.py.types import Address
-from genlayer.py.public_abi import StorageType
+import genlayer as gl
+from genlayer.types import Address, u64, i64, u32
+from genlayer.vm.public_abi import StorageView
 
 
 def decide(trusted: bool, value: int, min_value: int) -> bool:
     return trusted and value >= min_value
 
 
-class ExampleConsumer(gl.Contract):
+class ExampleConsumer(gl.contract.Contract):
     feed_address: Address
     accepted: u32
     rejected: u32
@@ -137,8 +137,8 @@ class ExampleConsumer(gl.Contract):
 
     @gl.public.write
     def check(self, feed_id: str, max_age: u64, min_value: i64):
-        feed = gl.get_contract_at(self.feed_address)
-        view = feed.view(state=StorageType.LATEST_FINAL)   # pin to the final state
+        feed = gl.contract.get_at(self.feed_address)
+        view = feed.view(state=StorageView.LATEST_FINALIZED)   # pin to the final state
         trusted = view.is_trustworthy(feed_id, max_age)
         value = view.value(feed_id)
         if decide(trusted, value, min_value):
@@ -195,7 +195,9 @@ records: TreeMap[str, Record]            the last verified reading per feed
   a deliberate omission, so the disclosure is structural: an omitted source means
   `sources_read < sources_declared`, therefore the `PARTIAL` flag, therefore
   `is_trustworthy = false`.  A consumer that wants every source to have contributed
-  checks `status == "agreed"`.
+  checks `status == "agreed"`.  What the committee *does* catch is a leader that omits a
+  source it could read and that disagrees with the aggregate: that is a hidden dissent and
+  the proposal is rejected.
 * **The clock inside the GenVM is pinned to the transaction timestamp.**  There is no
   block number, no block hash and no host wall clock in the contract context.  The stored
   `read_at` is the transaction timestamp, not the moment the HTTP request was served.
@@ -214,7 +216,7 @@ records: TreeMap[str, Record]            the last verified reading per feed
 | network | Studio development preview (release candidate) |
 | canonical RPC | `https://studio-dev.genlayer.com/api` |
 | chain ID | **61997** |
-| deployed contract | `0xAb8eeAE77c55dFDFA1cdD945A5100bae3CaAa117` |
+| deployed contract | `0x81ffeD2e3b5558e67D6dCEa79B5Cead6E247d68F` |
 | source identity | `gen_getContractCode` read back, sha256 `a9081ddfc22aafe1055c043d815be785fc5bddfc3fe94cf91986c3948aaf3796`, byte-identical to `contracts/corroborate.py` |
 | live transcript | `docs/LIVE-RUN.md` |
 
@@ -231,7 +233,7 @@ tag that the tooling, the linter and the node all understand.
 | | |
 |:--|:--|
 | **live, with transaction hashes** | deploy, the deployed source matches the repository byte for byte, `register_feed`, `refresh` against three real public APIs, the published value and its per-source provenance, the `agreed` and `partial` statuses, the consumer guard refusing a partial reading, a non-curator refused (`rollback / not the curator`), malformed input refused (`rollback / invalid sources`), and no state written by a refused call |
-| **unit tests only** | the validator rejecting a forged value, a forged digest, an inflated quorum, a forged status, a forged read time and a dropped source; the committee rejecting a reading without a quorum; the injected-body case; the page-drift case |
+| **unit tests only** | the validator rejecting a forged value, a forged digest, an inflated quorum, a forged status, a forged read time, a forged per source verdict, a dropped source and a hidden dissent; the committee rejecting a reading without a quorum; the injected-body case; the page-drift case |
 | **not covered** | the consumer contract's cross-contract call - the direct test runner cannot execute one, so only the consumer's rule is unit tested.  No live validator disagreement was observed. |
 
 `docs/LIVE-RUN.md` has the dated transcript with every transaction hash.
