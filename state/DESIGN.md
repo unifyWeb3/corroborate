@@ -38,7 +38,7 @@ needed to decide whether to trust it.
 *tolerance-consensus reading protocol*: declared sources -> declared extraction -> declared
 aggregate -> declared tolerance -> independent re-derivation -> verified provenance. A new feed is
 a configuration entry, not new code. The contract is also directly composable: another contract
-reads it with `gl.get_contract_at(...).view(state=StorageType.LATEST_FINAL)` and gates on the
+reads it with `gl.get_contract_at(...).view(state=StorageView.LATEST_FINALIZED)` and gates on the
 agreement status.
 
 **Why it is not a thin LLM wrapper.** There is no LLM in the design at all (research found none
@@ -132,7 +132,7 @@ records: TreeMap[str, Record]                   # latest verified reading per fe
 
 ### Why every stored record field is committee-checked
 
-`records[feed_id]` is written only after `gl.vm.run_nondet_unsafe(leader_fn, validator_fn)`
+`records[feed_id]` is written only after `gl.vm.run_nondet(leader_fn, validator_fn)`
 returns, and the validator function recomputes every field from its own network reads:
 
 * `value` - the validator recomputes the median of its own readings of the same source set and
@@ -198,21 +198,22 @@ silently zero).
 
 ```python
 # contracts/ExampleConsumer.py
-from genlayer import *
-from genlayer.py.types import Address, u256
+import genlayer as gl
+from genlayer.types import Address, u256
+from genlayer.vm.public_abi import StorageView
 
 FEED_ADDRESS = Address("0x...")     # the deployed corroborate contract
 
-class ExampleConsumer(gl.Contract):
+class ExampleConsumer(gl.contract.Contract):
     last_seen: i64
     accepted: u32
     rejected: u32
 
     @gl.public.write
     def check(self, feed_id: str, max_age: u64):
-        feed = gl.get_contract_at(FEED_ADDRESS)
+        feed = gl.contract.get_at(FEED_ADDRESS)
         # pin the read to the final state, not the newest non-final one
-        record = feed.view(state=StorageType.LATEST_FINAL).is_trustworthy(feed_id, max_age)
+        record = feed.view(state=StorageView.LATEST_FINALIZED).is_trustworthy(feed_id, max_age)
         if record:
             self.accepted += 1
         else:
@@ -400,7 +401,7 @@ Refusal tests always carry a **positive control**: the same call with valid inpu
 * **The installed SDK sources** (`genlayer-py 0.19.0rc2`, `genlayer-test 0.30.0rc2`,
   `genvm-linter 0.11.1rc2`, and the extracted `genlayer` std lib): confirmed the storage type
   rules, the `Response.status/body` shape, the availability of `genlayer.py.keccak.Keccak256`,
-  `StorageType.LATEST_FINAL` for pinned reads, and the linter's forbidden-import and
+  `StorageView.LATEST_FINALIZED` for pinned reads, and the linter's forbidden-import and
   forbidden-in-nondet rules.
 * **Ecosystem survey**: see `state/MEMORY.md` stage 0/1 notes and `docs/CONSENSUS.md`.
 

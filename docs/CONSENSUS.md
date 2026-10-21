@@ -64,7 +64,7 @@ is trusted for it.  Everything that describes an actual reading *is* consensus-d
    |  copy it into plain python values       |
    +------------------------------------------+
           |
-          |  gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+          |  gl.vm.run_nondet(leader_fn, validator_fn)
           v
    +------------------------------------------+
    |            LEADER (one node)            |
@@ -155,10 +155,26 @@ reasonable.  It re-reads the world and re-derives the reading, then compares.
 | 9 | the recomputed agreeing count satisfies `min_quorum` | publishing a number nobody agrees on |
 | 10 | the recomputed flags equal the leader's flags | a status that hides a disagreement |
 | 11 | `sources_read` and `data_ts` match the recomputation | an incomplete or invented provenance record |
+| 12 | the per source verdict equals the validator's own verdict | a leader that calls a dissenting source an agreeing one |
+| 13 | a source the leader left out but the validator could read agrees with the aggregate | a leader that hid a dissent by omission |
 
 If any check fails the validator returns `False`.  GenLayer then rotates the leader.  If no
 leader can satisfy the committee the transaction ends **undetermined** and **nothing is
 written**: a reading without agreement is not published.
+
+In code, the validator receives the leader's result and has to look at it before trusting
+anything in it:
+
+```python
+def validator_fn(result) -> bool:
+    if not isinstance(result, gl.vm.Return):   # the leader failed
+        return False
+    proposal = result.calldata
+    ...
+```
+
+A source the leader could not read is not held against it: only a source the validator
+*could* read and that disagrees with the aggregate turns the omission into a rejection.
 
 ### What the digest covers, and why
 
@@ -256,15 +272,15 @@ publishes the evidence and the status; the policy belongs to the consumer.
 ## 8. Reading it from another contract
 
 ```python
-feed = gl.get_contract_at(FEED_ADDRESS)
-view = feed.view(state=StorageType.LATEST_FINAL)   # pin the read to the final state
+feed = gl.contract.get_at(FEED_ADDRESS)
+view = feed.view(state=StorageView.LATEST_FINALIZED)   # pin the read to the final state
 if view.is_trustworthy("eur-usd", 3600):
     price = view.value("eur-usd")
 ```
 
 Two things matter here:
 
-* `StorageType.LATEST_FINAL` - a public RPC can serve a not yet final state right after a
+* `StorageView.LATEST_FINALIZED` - a public RPC can serve a not yet final state right after a
   receipt, and `LATEST_NON_FINAL` (the default) reads that.  A consumer that must not act
   on a reading that can still change pins the final state.
 * `is_trustworthy` - reading `value` alone gives the last stored number whatever its
