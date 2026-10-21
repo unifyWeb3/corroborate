@@ -287,6 +287,9 @@ tests/helpers.py               test helpers
 docs/CONSENSUS.md              how the consensus works, step by step
 docs/LIVE-RUN.md               the dated transcript of the live run
 scripts/live_run.py            deploy, fund, refresh, read back
+scripts/verify_deployment.py   read the deployed source back and compare it
+scripts/fetch_genvm_bundle.py  fetch and checksum the GenVM bundle the runner needs
+scripts/pre_push_sweep.py      the pre-push secret sweep
 state/DESIGN.md                the design, the red team and the feature freeze
 state/MEMORY.md                the decision log
 submission/contribution-text.md  the portal submission text
