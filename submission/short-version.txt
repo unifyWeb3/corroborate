@@ -1,0 +1,9 @@
+corroborate lets other genlayer contracts read a web number, with the evidence that it was corroborated.
+
+a curator declares a feed: 2 to 8 https sources, a json path each, a tolerance, a quorum. the leader fetches them all and takes the median. every validator re-fetches them all, re-derives the reading and accepts it only if each value is inside the tolerance of its own value, each digest matches, the aggregate matches its own median, and the quorum matches. only then are the value and provenance written.
+
+no language model: the check is integer arithmetic over independently read values. disagreement is a result, not an error: a dissenting source is kept and flagged, an unreadable one flagged partial, no quorum means no publication.
+
+deployed on studio dev preview, chain id 61997, at 0xab8eeae77c55fdfa1cdd945a5100bae3caaa117; the source reads back byte for byte as the repo.
+
+78 unit tests pass, each refusal has a positive control. repo: https://github.com/unifyWeb3/corroborate

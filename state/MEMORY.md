@@ -124,3 +124,81 @@ projects (see Stage 1 for the final pick). Rejected options and reasons are reco
 ### 0.7 Stage 0 status
 
 **DONE.** No human action needed so far. Next: Stage 1 design.
+
+---
+
+## STAGE 1 - design
+
+* `state/DESIGN.md` written before any code: purpose, roles and trust model, the full state
+  design (every field, who may write it, what the committee verified), the interface with a
+  caller example, the consensus design with the exact tolerance formula, the error table and
+  an 18 case red team analysis.
+* Name: **`corroborate`**.  Shortlist checked for availability under `unifyWeb3`:
+  one candidate was already taken by another project in the same account (rejected, and not
+  named here), `ratify` is a well known security project (rejected), `epsilon` is a known
+  crypto network (rejected), `barometer`/`gauge`/`multiplex`/`quorum` are overused or too
+  generic (rejected), `plumb`, `probe`, `witness`, `tally`, `accord`, `corroborate` were
+  free.  `corroborate` was kept because it names the mechanism exactly: independent
+  corroboration of one reading.
+* Feature freeze declared at the end of the design; corrections are recorded in
+  `state/DESIGN.md` section 11.
+* The ecosystem survey subagent was cancelled by the environment before it reported; the
+  survey was therefore done by reading the official documentation and the installed SDK
+  sources instead (see 0.4).  Nothing in the ecosystem was copied, and no other project or
+  author is named anywhere in this repository.
+
+## STAGE 2 - build
+
+* `contracts/corroborate.py` - the contract.  `contracts/example_consumer.py` - an example
+  consumer that pins its read to the final state and gates on `is_trustworthy`.
+* `tests/test_corroborate.py` - 78 tests, all passing, each refusal with a positive control.
+* The contract was **ported to the v0.6.0-rc10 SDK** after the first version failed to load:
+  `import genlayer as gl`, `gl.contract.Contract`, `gl.storage.DynArray/TreeMap`,
+  `gl.vm.run_nondet`, `gl.nondet.web.get`, `gl.contract.get_at`,
+  `StorageView.LATEST_FINALIZED`.
+* The release candidate linter still looks for the decorator name `allow_storage`, so
+  `genlayer.storage.allow` is imported under that name (same decorator, one line of
+  explanation in the contract).
+* The runner is pinned with `# { "Depends": "py-genlayer:latest" }`: an explicit hash is
+  rejected by the node with `invalid_contract runner malformed` unless the node knows it.
+* SDK bundle: the documented `genvm-lint check` command tried `genvm-runners-all.tar.xz`
+  first (404 in v0.6.0-rc10) and then `genvm-universal.tar.xz` (310.5 MiB, present).  The
+  download was resumed with a Range request and verified against the release's published
+  `SHA256SUMS` (`d3c6ba36...cf801af`); the same verified file was placed in the linter's
+  cache so the linter and the direct runner share one artifact.  No cache was hand seeded
+  with anything but the official, checksum verified bundle.
+
+## STAGE 3 - self review
+
+Attacked the diff as an adversary; every finding was fixed with a test:
+
+| finding | fix |
+|:--|:--|
+| the per source `agrees` verdict was stored but not re-checked by the validator | the validator now recomputes it and rejects a mismatch (test: `test_the_validator_rejects_a_forged_per_source_verdict`) |
+| a leader could omit a source it read and thereby hide a dissent | the validator now rejects a proposal that leaves out a source it could read whose value disagrees with the aggregate (test: `test_the_validator_rejects_a_leader_that_hid_a_dissent`), and still accepts an omitted source that agrees (test: `test_the_validator_accepts_a_leader_that_dropped_an_agreeing_source`) |
+| a body digest could not be verified when the page changes between reads | the digest now covers the reading (`keccak256("<index>:<value>")`), which both sides compute independently |
+| a stale source was excluded from the aggregate, which made the voting set depend on a freshness decision | stale sources vote and the record is flagged `STALE` |
+| `gl.vm.get_timestamp()` raises on the network | the contract uses the wired standard library clock |
+| no test covered the value extraction edge cases | tests for arrays, floats, booleans, non numeric strings, out of range values and oversize bodies |
+| the quorum refusal test had no positive control | it now also shows a reading with a met quorum being accepted |
+
+## STAGE 4 - live run
+
+* Network: **studio-dev** (chain 61997), canonical RPC `https://studio-dev.genlayer.com/api`.
+* Keys: three throwaway accounts in `secrets/keys.json` (git ignored, mode 600, addresses
+  only in the docs).  Funded with `sim_fundAccount`; no human step was needed.
+* Deployed: `0xAb8eeAE77c55dFDFA1cdD945A5100bae3CaAa117`, tx
+  `0xfc6ae8665944b22153bc1b365e56d9d1acc2b14c35f1a742e3f1f6e8836855a6`.
+* Source read back with `gen_getContractCode`: sha256
+  `a9081ddfc22aafe1055c043d815be785fc5bddfc3fe94cf91986c3948aaf3796` on both sides, 29983
+  bytes, byte identical.
+* `register_feed` tx `0xdb09ce622c6583cb8878a190597f86db79b3e3868d528d7782f36b56262ccd62`,
+  `refresh` tx `0xeaf6f8cedffebeedde0cc1c3c696a2050cd156a36734664b02486779ea6d5164` against
+  three real public FX providers: value 89015, all three agree, status `agreed`,
+  `is_trustworthy` true.
+* Refusals: a non-curator `register_feed` rolled back with `not the curator`, a malformed
+  source list rolled back with `invalid sources`, and `feed_count` stayed at 1.
+* An earlier run produced a `partial` record when one provider was unreachable from the
+  node: the reading was published with the gap disclosed and the guard refused it.
+* **No validator disagreement was observed live.**  The rejection path is covered by the unit
+  tests only, and `docs/LIVE-RUN.md` says so.

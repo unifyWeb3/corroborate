@@ -214,8 +214,8 @@ records: TreeMap[str, Record]            the last verified reading per feed
 | network | Studio development preview (release candidate) |
 | canonical RPC | `https://studio-dev.genlayer.com/api` |
 | chain ID | **61997** |
-| deployed contract | `0x04A9680A2F1b7fc6CE29d6127d1C95F6c6e115d2` |
-| source identity | `gen_getContractCode` read back, sha256 `20e5922d1ee740c74875c9bfc3d792fbcc1b555fea429fe6ee36352f37a4dfb1`, byte-identical to `contracts/corroborate.py` |
+| deployed contract | `0xAb8eeAE77c55dFDFA1cdD945A5100bae3CaAa117` |
+| source identity | `gen_getContractCode` read back, sha256 `a9081ddfc22aafe1055c043d815be785fc5bddfc3fe94cf91986c3948aaf3796`, byte-identical to `contracts/corroborate.py` |
 | live transcript | `docs/LIVE-RUN.md` |
 
 The release-candidate environment is separate from the stable Studionet (chain 61999).
@@ -239,20 +239,30 @@ tag that the tooling, the linter and the node all understand.
 ## Running the tests
 
 ```bash
-python -m venv .venv && . .venv/bin/activate
+python3 -m venv .venv && . .venv/bin/activate
 pip install genlayer-test==0.30.0rc2 genvm-linter==0.11.1rc2 pytest
 
+# the GenVM bundle the runner needs (~310 MiB, verified against the release SHA256SUMS)
+python scripts/fetch_genvm_bundle.py
+
 # unit tests (direct mode: the contract runs in process, no network)
-pytest tests/test_corroborate.py -v
+GENVM_VERSION=v0.6.0-rc10 pytest tests/test_corroborate.py -v
 
 # the linter
-genvm-lint check contracts/corroborate.py
+GENVM_VERSION=v0.6.0-rc10 genvm-lint check contracts/corroborate.py
 ```
 
 The unit tests use the GenLayer direct test runner.  Web responses are mocked, the leader
 and the validator are executed separately, and the validator is replayed against honest and
 tampered leader proposals.  `docs/LIVE-RUN.md` records what was additionally run against
 the live network.
+
+The live script needs `genlayer-py` and the keys in `secrets/keys.json`:
+
+```bash
+pip install genlayer-py==0.19.0rc2
+python scripts/live_run.py
+```
 
 ## Limits
 
