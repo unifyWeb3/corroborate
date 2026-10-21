@@ -250,12 +250,12 @@ def main() -> int:
         2,
         sources_json,
     ]
+    # The Studio simulator on this release candidate does not answer sim_call, so the
+    # fee estimate is built from the network policy instead of from a simulation, and
+    # the execution budget is raised for the calls that do web requests.
     feed_estimate = retry(
-        lambda: client.estimate_transaction_fees_for_write(
-            address=address,
-            function_name="register_feed",
-            account=accts["deployer"],
-            args=feed_args,
+        lambda: client.estimate_transaction_fees(
+            options={"executionBudgetPerRound": 5 * 10**17}
         ),
         "register_feed estimate",
     )
@@ -275,11 +275,11 @@ def main() -> int:
     say(out, f"  register_feed tx: {register_tx}")
     wait(client, register_tx, "register_feed", out)
 
-    refresh_estimate = client.estimate_transaction_fees_for_write(
-        address=address,
-        function_name="refresh",
-        account=accts["deployer"],
-        args=["eur-usd"],
+    refresh_estimate = retry(
+        lambda: client.estimate_transaction_fees(
+            options={"executionBudgetPerRound": 10 * 10**17}
+        ),
+        "refresh estimate",
     )
     refresh_tx = retry(
         lambda: client.write_contract(
@@ -325,11 +325,8 @@ def main() -> int:
     say(out, "step 5: live refusals")
     rogue_args = ["rogue", "rogue", "EUR", 150, 0, 172800, 2, sources_json]
     refusal_estimate = retry(
-        lambda: client.estimate_transaction_fees_for_write(
-            address=address,
-            function_name="register_feed",
-            account=accts["alice"],
-            args=rogue_args,
+        lambda: client.estimate_transaction_fees(
+            options={"executionBudgetPerRound": 5 * 10**17}
         ),
         "refusal estimate",
     )
@@ -350,11 +347,8 @@ def main() -> int:
 
     bad_args = ["bad", "bad", "EUR", 150, 0, 172800, 2, "not json"]
     bad_estimate = retry(
-        lambda: client.estimate_transaction_fees_for_write(
-            address=address,
-            function_name="register_feed",
-            account=accts["deployer"],
-            args=bad_args,
+        lambda: client.estimate_transaction_fees(
+            options={"executionBudgetPerRound": 5 * 10**17}
         ),
         "bad input estimate",
     )

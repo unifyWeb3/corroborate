@@ -124,14 +124,10 @@ class Record:
 def now_ts() -> int:
     """The transaction timestamp.
 
-    In the deterministic context `gl.vm.get_timestamp()` is the transaction timestamp,
-    and it is the same value on the leader and on every validator that re-executes the
-    transaction, so it can be stored and re-checked.  The standard library clock is
-    wired to the same value, and is used as a fallback."""
-    stamp = gl.vm.get_timestamp()
-    if stamp is None:
-        stamp = datetime.now(timezone.utc)
-    return int(stamp.timestamp())
+    Inside the GenVM the standard library clock is wired to the transaction datetime,
+    so this is the same value on the leader and on every validator that re-executes the
+    transaction.  It can therefore be stored and re-checked by the committee."""
+    return int(datetime.now(timezone.utc).timestamp())
 
 
 def is_word_char(ch: str) -> bool:
