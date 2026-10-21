@@ -24,7 +24,13 @@ the last one being the guard a consuming contract should use.
 """
 
 import genlayer as gl
-from genlayer.storage import DynArray, TreeMap, allow
+from genlayer.storage import DynArray, TreeMap
+
+# The release candidate SDK calls this decorator `allow`; the matching linter
+# (genvm-linter 0.11.1rc2) still looks for the name `allow_storage`.  It is the same
+# decorator, imported under the name the linter knows.
+from genlayer.storage import allow as allow_storage
+
 from genlayer.types import u32, u64, i64, Address
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -65,7 +71,7 @@ REASON_OVERSIZE = 6
 # ------------------------------------------------------------------- storage
 
 
-@allow
+@allow_storage
 @dataclass
 class Source:
     url: str
@@ -74,7 +80,7 @@ class Source:
     scale: u32
 
 
-@allow
+@allow_storage
 @dataclass
 class Feed:
     label: str
@@ -88,7 +94,7 @@ class Feed:
     disabled: bool
 
 
-@allow
+@allow_storage
 @dataclass
 class Reading:
     index: u32
@@ -98,7 +104,7 @@ class Reading:
     agrees: bool
 
 
-@allow
+@allow_storage
 @dataclass
 class Record:
     value: i64
