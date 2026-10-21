@@ -1,0 +1,13 @@
+.rcvenv/
+.rcnode/
+.research/
+__pycache__/
+*.pyc
+.pytest_cache/
+secrets/
+*.key
+*.pem
+.env
+.venv/
+node_modules/
+artifacts/
