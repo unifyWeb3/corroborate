@@ -70,7 +70,6 @@ is trusted for it.  Everything that describes an actual reading *is* consensus-d
    |            LEADER (one node)            |
    |  for each declared source:              |
    |    fetch body            (nondet)       |
-   |    digest = keccak256(body)             |
    |    doc    = json.loads(body)            |
    |    value  = extract(doc, value_path)    |
    |    ts     = extract(doc, time_path)     |
@@ -113,7 +112,7 @@ For every declared source, in order:
    * a transport failure, a non-200 status, a body over `MAX_BODY_BYTES`, a body that is
      not JSON, a missing path, a non-numeric leaf or a value outside the integer range
      all mark **that source** as failed.  They never fail the whole reading.
-2. `digest = keccak256(body)` - the provenance anchor: which bytes were read.
+2. `digest = keccak256("<index>:<scaled value>")` - the digest of the reading.
 3. `value = extract(doc, value_path) * scale`, rounded half away from zero.
    The scale is what makes the comparison integer arithmetic.
 4. `ts = extract(doc, time_path)` when the source declares one.
@@ -127,6 +126,10 @@ Then the aggregate:
   * `DISPUTED` - some source that was read is not within the tolerance of the median,
   * `PARTIAL` - fewer sources were read than were declared,
   * `STALE` - a source's own timestamp is older than `max_age_seconds`.
+
+A stale source still votes: excluding it would make the aggregate depend on a freshness
+decision that the leader and the validator could make differently.  Instead the reading is
+flagged and the consumer guard refuses it.
 
 The lower median is used on purpose: it is always one of the observed values, so the
 published number is always a number that some source actually reported, and the median
@@ -145,7 +148,7 @@ reasonable.  It re-reads the world and re-derives the reading, then compares.
 | 2 | the proposal's reading table names declared sources only, once each | a duplicated or invented source |
 | 3 | the validator also read every source the leader used | an aggregate the validator cannot reproduce |
 | 4 | `|leader_value_i - validator_value_i| <= tolerance` for every source | a leader that reports a number the source never showed |
-| 5 | `digest_i == validator_digest_i`, or the values are exactly equal | a leader that reports a digest it did not compute; a body that ticked between the two reads |
+| 5 | the leader's digest equals the digest of the validator's own reading of that source | a leader that reports a reading the validator did not make |
 | 6 | the source timestamps agree within `TS_TOL_SECONDS` | a leader that invents a freshness timestamp |
 | 7 | `|leader_value - validator_median| <= tolerance` over the same source set | an aggregate that is not the median of the readings |
 | 8 | the recomputed agreeing count equals the leader's `agree_count` | an inflated quorum |
@@ -156,6 +159,20 @@ reasonable.  It re-reads the world and re-derives the reading, then compares.
 If any check fails the validator returns `False`.  GenLayer then rotates the leader.  If no
 leader can satisfy the committee the transaction ends **undetermined** and **nothing is
 written**: a reading without agreement is not published.
+
+### What the digest covers, and why
+
+The digest is `keccak256("<source index>:<scaled value>")` - the digest of the *reading*.
+It is deliberately not a digest of the raw response body.
+
+The reason is verification.  A page that ticks between the leader's read and the
+validator's read has two different bodies, so two different body digests, even though both
+nodes read the same value.  Accepting that case means accepting a digest the committee
+cannot confirm, and a stored digest that nobody verified is a leader claim rather than a
+fact.  The reading digest has neither problem: both sides compute it from their own
+extraction, and it must be identical.  A consequence worth stating plainly: the stored
+record identifies *what was read* (which source, which value), not *which bytes came back
+over the wire*.
 
 ### The tolerance, precisely
 
@@ -229,7 +246,7 @@ their own time.
 | a source cannot be read | the source does not vote, the reading is published with the gap disclosed | `flags = PARTIAL`, `sources_read < sources_declared`, `is_trustworthy = false` |
 | the sources are so far apart that the quorum fails | the proposal is rejected, the leader is rotated | nothing is written; the reading keeps its previous value |
 | the leader's value is not reproducible by the validator | the proposal is rejected | nothing is written |
-| the page changed between the leader and the validator | accepted only if the derived value did not change | the digest of the body that was read is stored |
+| the page changed between the leader and the validator | accepted only if the derived value did not change | the digest of the reading is stored |
 
 The consumer decides what to do with a `DISPUTED` or `PARTIAL` reading.  The primitive
 publishes the evidence and the status; the policy belongs to the consumer.

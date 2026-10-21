@@ -436,3 +436,40 @@ Refusal tests always carry a **positive control**: the same call with valid inpu
 Frozen after this document. Allowed afterwards: bug fixes, security fixes, extra tests, extra
 documentation. Not allowed: new public methods, new state fields, new configuration knobs, new
 aggregation rules.
+
+---
+
+## 11. Corrections made while building (Stage 2/4)
+
+The freeze was honoured: no public method, no state field, no configuration knob and no
+aggregation rule was added after this document.  The corrections below are fixes for problems
+that only the live environment could show.
+
+1. **The digest covers the reading, not the response body.**  The design said the digest
+   identifies the bytes that were read.  That cannot be verified whenever the page changes
+   between the leader's read and the validator's read, and the drift case (accept the body
+   change when the value did not move) leaves a stored digest the committee could not
+   confirm - a leader claim, not a fact.  The digest is now
+   `keccak256("<source index>:<scaled value>")`: both sides compute it from their own
+   extraction and it must be identical.  A page that ticks but yields the same value now
+   passes with no special case at all.
+2. **A stale source still votes.**  The design excluded a stale source from the aggregate.
+   That makes the voting set depend on a freshness decision, and the leader and the
+   validator can make that decision differently when a source sits near the staleness
+   boundary - a needless source of rejection.  Stale sources now vote and the record is
+   flagged `STALE`; the consumer guard refuses it.
+3. **The runner is pinned with `latest`.**  An explicit runner hash is rejected by the
+   release-candidate network with `invalid_contract runner malformed` unless the node knows
+   that exact hash.  `py-genlayer:latest` is understood by the node, the linter and the
+   direct test runner.
+4. **The clock is `datetime.now(timezone.utc)`.**  `gl.vm.get_timestamp()` raises on this
+   network (`exit_code 1` on every write that called it).  The standard library clock is
+   wired to the transaction datetime, which is what the design assumed.
+5. **The contract targets the v0.6.0-rc10 SDK layout**: `import genlayer as gl`,
+   `gl.contract.Contract`, `gl.storage.DynArray/TreeMap`, `gl.vm.run_nondet`,
+   `gl.nondet.web.get`, `gl.contract.get_at` and `StorageView.LATEST_FINALIZED` for the
+   pinned read.  The release-candidate linter still looks for the decorator name
+   `allow_storage`, so `genlayer.storage.allow` is imported under that name.
+6. **The fee estimate for writes is built from the network fee policy**, not from a
+   simulation: the release-candidate Studio does not answer `sim_call`.  The execution
+   budget is raised for the calls that do web requests.

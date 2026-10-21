@@ -44,15 +44,15 @@ FEED_SOURCES = [
         "scale": 100000,
     },
     {
-        "url": "https://api.exchangerate-api.com/v4/latest/USD",
-        "value_path": "rates.EUR",
-        "time_path": "time_last_updated",
-        "scale": 100000,
-    },
-    {
         "url": "https://api.frankfurter.dev/v1/latest?base=USD&symbols=EUR",
         "value_path": "rates.EUR",
         "time_path": "",
+        "scale": 100000,
+    },
+    {
+        "url": "https://api.fxratesapi.com/latest?base=USD&currencies=EUR",
+        "value_path": "rates.EUR",
+        "time_path": "timestamp",
         "scale": 100000,
     },
 ]
@@ -133,6 +133,16 @@ def wait(client, tx_hash, label, out: Path, tries: int = 40):
         time.sleep(3)
     say(out, f"  {label} did not reach a decision in time")
     return None
+
+
+def outcome(client, tx_hash):
+    """The execution outcome of a decided transaction: (status, payload)."""
+    info = client.get_transaction(tx_hash)
+    receipts = (info.get("consensus_data") or {}).get("leader_receipt") or []
+    if not receipts:
+        return ("unknown", "")
+    result = receipts[0].get("result") or {}
+    return (result.get("status"), result.get("payload"))
 
 
 def contract_address_from_tx(client, tx_hash):
@@ -331,7 +341,7 @@ def main() -> int:
         "refusal estimate",
     )
     try:
-        client.write_contract(
+        rogue_tx = client.write_contract(
             address=address,
             function_name="register_feed",
             account=accts["alice"],
@@ -341,9 +351,16 @@ def main() -> int:
                 "feeValue": refusal_estimate["feeValue"],
             },
         )
-        say(out, "  non-curator register_feed: ACCEPTED (unexpected)")
+        say(out, f"  non-curator register_feed tx: {rogue_tx}")
+        wait(client, rogue_tx, "non-curator register_feed", out)
+        status, payload = outcome(client, rogue_tx)
+        say(out, f"  non-curator register_feed outcome: {status} / {payload}")
+        if status == "rollback":
+            say(out, "  non-curator register_feed REFUSED (expected)")
+        else:
+            say(out, "  non-curator register_feed was NOT refused (unexpected)")
     except Exception as exc:  # noqa: BLE001
-        say(out, f"  non-curator register_feed rejected: {type(exc).__name__}: {exc}")
+        say(out, f"  non-curator register_feed rejected at submission: {type(exc).__name__}: {exc}")
 
     bad_args = ["bad", "bad", "EUR", 150, 0, 172800, 2, "not json"]
     bad_estimate = retry(
@@ -353,7 +370,7 @@ def main() -> int:
         "bad input estimate",
     )
     try:
-        client.write_contract(
+        bad_tx = client.write_contract(
             address=address,
             function_name="register_feed",
             account=accts["deployer"],
@@ -363,10 +380,24 @@ def main() -> int:
                 "feeValue": bad_estimate["feeValue"],
             },
         )
-        say(out, "  malformed sources_json: ACCEPTED (unexpected)")
+        say(out, f"  malformed sources_json tx: {bad_tx}")
+        wait(client, bad_tx, "malformed sources_json", out)
+        status, payload = outcome(client, bad_tx)
+        say(out, f"  malformed sources_json outcome: {status} / {payload}")
+        if status == "rollback":
+            say(out, "  malformed sources_json REFUSED (expected)")
+        else:
+            say(out, "  malformed sources_json was NOT refused (unexpected)")
     except Exception as exc:  # noqa: BLE001
-        say(out, f"  malformed sources_json rejected: {type(exc).__name__}: {exc}")
+        say(out, f"  malformed sources_json rejected at submission: {type(exc).__name__}: {exc}")
 
+    say(out, "")
+    say(out, "step 6: read the feed back after the refusals")
+    feed_count = retry(
+        lambda: client.read_contract(address=address, function_name="feed_count"),
+        "feed_count",
+    )
+    say(out, f"  feed_count: {feed_count}")
     say(out, "")
     say(out, f"transcript written to {out}")
     return 0

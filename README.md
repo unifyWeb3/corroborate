@@ -47,9 +47,8 @@ number per source and aggregates them.  **Every validator re-fetches every sourc
 and re-derives the whole reading before it accepts the leader's proposal:
 
 * each per-source value must be within the declared tolerance of the validator's own value,
-* each per-source digest must match the digest of the body the validator itself read (a
-  body that ticked between the two reads is accepted only when the derived value did not
-  change),
+* each per-source **digest of the reading** must equal the digest the validator computed
+  for its own reading,
 * the aggregate must equal the validator's own re-derived median within the tolerance,
 * the quorum, the flags and the read time must be exactly what the validator computes.
 
@@ -176,6 +175,11 @@ records: TreeMap[str, Record]            the last verified reading per feed
 * Every field of `Record` is recomputed by the validator from its own reads before it is
   stored.  The only two stored fields that are *not* consensus-derived are `owner` and the
   per-feed `disabled` flag, and they are administrative.
+* `digest` is the keccak256 of the **reading** (source index and scaled value), not of the
+  raw response body.  A body digest could not be verified whenever the page changes
+  between the leader's read and the validator's read, and an unverifiable digest is a
+  leader claim rather than a fact.  The reading digest is computed by both sides and must
+  be identical.
 
 ## The trust model, stated plainly
 
@@ -210,12 +214,27 @@ records: TreeMap[str, Record]            the last verified reading per feed
 | network | Studio development preview (release candidate) |
 | canonical RPC | `https://studio-dev.genlayer.com/api` |
 | chain ID | **61997** |
-| deployed contract | *see `docs/LIVE-RUN.md`* |
-| source identity | `gen_getContractCode` read back and compared with sha256, see `docs/LIVE-RUN.md` |
+| deployed contract | `0x04A9680A2F1b7fc6CE29d6127d1C95F6c6e115d2` |
+| source identity | `gen_getContractCode` read back, sha256 `20e5922d1ee740c74875c9bfc3d792fbcc1b555fea429fe6ee36352f37a4dfb1`, byte-identical to `contracts/corroborate.py` |
+| live transcript | `docs/LIVE-RUN.md` |
 
 The release-candidate environment is separate from the stable Studionet (chain 61999).
 The tools used here are the matching release candidates: `genlayer-py 0.19.0rc2`,
 `genlayer-test 0.30.0rc2`, `genvm-linter 0.11.1rc2`, `genlayer-js 2.0.0-rc.1`.
+
+The contract pins its runner with `# { "Depends": "py-genlayer:latest" }`: an explicit runner
+hash is rejected by this network unless the node knows that exact hash, and `latest` is the
+tag that the tooling, the linter and the node all understand.
+
+### What is verified live and what is only covered by the tests
+
+| | |
+|:--|:--|
+| **live, with transaction hashes** | deploy, the deployed source matches the repository byte for byte, `register_feed`, `refresh` against three real public APIs, the published value and its per-source provenance, the `agreed` and `partial` statuses, the consumer guard refusing a partial reading, a non-curator refused (`rollback / not the curator`), malformed input refused (`rollback / invalid sources`), and no state written by a refused call |
+| **unit tests only** | the validator rejecting a forged value, a forged digest, an inflated quorum, a forged status, a forged read time and a dropped source; the committee rejecting a reading without a quorum; the injected-body case; the page-drift case |
+| **not covered** | the consumer contract's cross-contract call - the direct test runner cannot execute one, so only the consumer's rule is unit tested.  No live validator disagreement was observed. |
+
+`docs/LIVE-RUN.md` has the dated transcript with every transaction hash.
 
 ## Running the tests
 
