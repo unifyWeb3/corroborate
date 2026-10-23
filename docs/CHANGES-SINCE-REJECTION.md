@@ -125,8 +125,8 @@ within-tolerance value lies inside the band is in `docs/CONSENSUS.md` section 3;
 * `test_the_invariant_holds_exhaustively` (60,038 generated cases) and
   `test_the_invariant_holds_on_randomised_large_values` (30,000 cases): for every
   generated reading, the consumer's decision from the stored result matches the
-  validator's own reading or is `INDETERMINATE`, never the opposite.  The
-  tolerance-bound lemma adds 36,475 cases.
+  validator's own reading or is `INDETERMINATE`, never the opposite.  36,475 of the
+  exhaustive cases exercise the tolerance-bound branch of the lemma.
 * `test_the_validator_rejects_a_tampered_value` (now tampering `lo`/`hi`), the forged
   digest/value, inflated quorum, forged status and forged read-time tests all still pass
   with positive controls.
