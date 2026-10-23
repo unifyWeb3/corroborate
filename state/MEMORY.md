@@ -217,3 +217,98 @@ Attacked the diff as an adversary; every finding was fixed with a test:
   character lowercase version) are in the repository.
 * The submission text was **not** submitted anywhere; it is in the repository for the user
   to paste.
+
+---
+
+# FIX CYCLE - reviewer rejection (2026-10-23)
+
+Baseline tag `rejected-v1` = `a698b23`.  The rejected deployment stays
+`0x81ffeD2e3b5558e67D6dCEa79B5Cead6E247d68F`; it is superseded, not migrated.
+
+## STAGE 1 - reproduce the rejection, find a working pairing
+
+* Deliverable: `state/REVIEW-FIX.md`.  No code changes in this stage.
+* **Linter 0.11.0 (current stable) fails on the 0.6 SDK.**  With the supported
+  `GENVMROOT` path pointing at the legacy studio SDK (v0.2.16):
+  `✓ Lint passed (3 checks)` / `✗ Validation failed` /
+  `Import error: No module named 'genlayer.storage'` / exit 1.  With
+  `GENVM_VERSION=v0.6.0-rc10` it fails with
+  `No GenVM runner bundle for v0.6.0-rc10`; with no env it fails with
+  `Could not find py-genlayer in release`.  That is the reviewer's point 1.
+* **Linter 0.11.1rc2 + `GENVM_VERSION=v0.6.0-rc10` passes both contracts**:
+  `Lint passed (3 checks)` + `Validation passed` (10 methods / 3 methods), exit 0.
+  Pinned runner ids: `py-genlayer:babwp9t37jw9g4j2bccgn14g6x7x9s1f7dsmh7emvz735pz4zxa0`,
+  `py-lib-genlayer-std:z7fv8bqpetj3wnjd8sn5s5xfqve3rz8nmtq4npwf2qdvns57zjgg`.
+  The rc10 `genvm-universal.tar.xz` sha256
+  `d3c6ba368dbd5cad01e484e19573906b4ffed41f46a48191bdc579c81cf801af` matches the
+  release `SHA256SUMS`.
+* **The network cannot carry the hash.**  Studio devnet (61997) rejects
+  `py-genlayer:<hash>` and `py-genlayer:v0.6.0-rc10` with
+  `invalid_contract runner malformed`; it accepts `test` and `latest`.  A live probe
+  with `latest` (tx `0xc5b6cc57...`, address `0x4703810a...`) reports the rc10 surface:
+  `contract.get_at` yes, `contract.at` no, `run_nondet` yes, `run_nondet_unsafe` no,
+  `storage.allow` yes, `StorageView.LATEST_FINALIZED` yes, old `genlayer.py` no.
+  Studionet (61999) rejects both the hash and `latest` with `invalid_contract`.
+  Decision: pin the toolchain in-repo, keep the deployable `latest` header, prove the
+  surface live and in the SDK-surface test.
+* **Point 2 is real.**  Against the tagged v1 contract, sources 1000/1020 with
+  `tol_abs=20`: the validator accepts a leader aggregate of 1010 (`within`), while its
+  own median is 1000.  At threshold 1005 the stored value says ABOVE and the validator's
+  own reading says BELOW.  `status` stays `agreed` / `is_trustworthy` true.  The
+  consequential fields are `latest["value"]`, `value(feed_id)` and the example
+  consumer's `decide`/`accepted`/`rejected`/`last_value`.  There is a second, partial
+  version: an omitted source within tolerance can move the subset median.
+
+## STAGE 2 - design
+
+* Deliverable: `state/DESIGN-fix.md`.  Chosen rule: exact per-source readings (the
+  digest binds them), exact median for a complete read (`lo == hi`), exact tolerance
+  interval for an incomplete read (`lo = m-B`, `hi = m+B` where
+  `B = max(abs, ceil(rel*M/(10000-rel)))`), validator requires its full-set median
+  inside the interval, and `compare(feed_id, threshold)` returns
+  `ABOVE`/`BELOW`/`INDETERMINATE`.  No point `value` accessor.  Rejected: quantization
+  (brittle at boundaries, does not remove INDETERMINATE), threshold-side agreement
+  (cannot know consumer thresholds), per-source exactness alone (does not cover an
+  omitted set).
+* Caps added: `MAX_TOL_REL_BPS=2000`, `MAX_TOL_ABS=MAX_VALUE//4`, keeping the band
+  inside i64.  Twelve red-team cases and the boundary/out-of-band/disagreement
+  behaviour are in the design file; `docs/CONSENSUS.md` was rewritten to the 15 checks.
+
+## STAGE 3 - tests first, then the fix
+
+* New `tests/test_invariants.py` (15 tests) written before the contract edit:
+  concrete v1 threshold flip, exhaustive property (60,038 cases) plus randomised
+  large-value property (30,000 cases), shifted/asymmetric/narrowed/inverted band
+  refusals with positive controls, float-band refusal, boundary/negative/zero-tolerance/
+  extreme-value cases, registration caps, pinned-SDK surface test with negative control.
+* **RED against `rejected-v1`:** `13 failed, 2 passed` (the two SDK-surface tests passed;
+  every other test failed because `compare`/`lo`/`hi`/`MAX_TOL_ABS` did not exist).
+* Implemented the contract change and updated the existing suite:
+  `95 passed in 74.80s`, no skips.  `proposal_from_record` now carries `lo`/`hi`;
+  `value_of()` asserts `lo == hi` for complete records; the consumer example uses
+  `compare` + `is_trustworthy` and counts `UNDECIDED`.
+
+## STAGE 4 - pinned lint and validation
+
+* Added `requirements-dev.txt` and `scripts/lint.sh` (refuses any linter other than
+  `0.11.1rc2` and any SDK other than `v0.6.0-rc10`; runs both contracts).
+* `GENVM_LINT_BIN=.rcvenv/bin/genvm-lint scripts/lint.sh`:
+  `genvm-lint 0.11.1rc2, GENVM_VERSION=v0.6.0-rc10`, both contracts
+  `Lint passed (3 checks)` + `Validation passed`, exit 0.  The same script with the
+  0.11.0 binary refuses: `refusing to lint with genvm-lint 0.11.0; the pin is 0.11.1rc2`.
+* The contract docstring now states the pin and why the header is `latest`;
+  `scripts/check_sdk_surface.py` checks 22 names for `corroborate.py` and 12 for
+  `example_consumer.py` against the real pinned package.
+
+## STAGE 5 - adversarial self-review
+
+* Found: `int(proposal["lo"])` would truncate a float (`100.5 -> 100`) and accept it as
+  the exact median.  Fixed with an integer/bool type check in `verify_proposal`; added
+  `test_a_non_integer_band_is_rejected` with a positive control.  Suite now 95.
+* Re-checked the README purpose text, the consumer snippet, the "exact"/"canonical"
+  claims: the exactness is stated as conditional on the reading digest (keccak256
+  collision resistance), and the unreadable-source case is documented as `PARTIAL` +
+  `is_trustworthy = false`, not as a bound.
+* `docs/CONSENSUS.md` was rewritten for the interval rule; `state/DESIGN.md` is marked
+  superseded for the aggregate and SDK pin.  `docs/LIVE-RUN.md` is left untouched as the
+  dated transcript of the rejected deployment.

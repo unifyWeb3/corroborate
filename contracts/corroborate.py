@@ -8,19 +8,30 @@ refresh.  The leader fetches every source, derives one number per source and agg
 them with the median.  Every validator re-fetches every source itself, re-derives the
 numbers, and accepts the leader's proposal only when
 
-  * each per-source value is within the declared tolerance of the validator's own value,
-  * each per-source digest matches the digest of the body the validator itself read
-    (or the values are exactly equal, which is what a body that ticks between the two
-    reads looks like),
-  * the aggregate equals the validator's own re-derived median within the tolerance,
+  * every reported per-source value is exactly the value the validator read itself
+    (the digest is keccak256("index:value"), so the reported readings are canonical),
+  * the aggregate is the exact lower median of the reported set, not a value within
+    the tolerance of it,
+  * when a declared source was not reported, the aggregate is the interval
+    [median - B, median + B] where B is the largest shift the declared tolerance can
+    produce, and the validator's own full-set median lies inside that interval,
   * the quorum, the flags and the read time are exactly what the validator computes.
 
-Only then is anything written to the chain.  What is written is the value plus its
-provenance: the per-source values, the keccak256 digest of every body that was read, the
-source's own data timestamp and the transaction timestamp of the refresh.
+What is written is never a point estimate that hides the tolerance.  A complete read
+collapses to `lo == hi == median`; an incomplete read stores an interval and the only
+consequential threshold API is `compare`, which returns ABOVE / BELOW / INDETERMINATE.
+There is no public point `value` accessor.
 
-The read side is deliberately small: `latest`, `value`, `status` and `is_trustworthy`,
-the last one being the guard a consuming contract should use.
+Target SDK: the contract is written and linted against genvm-manager v0.6.0-rc10.
+The runner ids are py-genlayer:babwp9t37jw9g4j2bccgn14g6x7x9s1f7dsmh7emvz735pz4zxa0
+and py-lib-genlayer-std:z7fv8bqpetj3wnjd8sn5s5xfqve3rz8nmtq4npwf2qdvns57zjgg.  The
+target network resolves its `latest` tag to this runner surface, which is why the
+header stays `latest`; scripts/lint.sh pins the SDK used for lint and validation and
+tests/test_invariants.py proves every import and API exists in those SDK files.
+
+The read side is deliberately small: `latest`, `compare`, `status` and
+`is_trustworthy`, the last one being the quality gate a consuming contract should use
+before acting on `compare`.
 """
 
 import genlayer as gl
@@ -50,7 +61,8 @@ MAX_UNIT_LEN = 16
 MAX_SOURCES_JSON = 8192
 MAX_SCALE = 1000000000
 MAX_VALUE = 4611686018427387904  # 2 ** 62
-MAX_TOL_REL_BPS = 10000  # 100 %
+MAX_TOL_REL_BPS = 2000  # 20 %: keeps the partial band bounded and B < M / 4
+MAX_TOL_ABS = MAX_VALUE // 4  # keeps median +/- B inside i64
 TS_TOL_SECONDS = 120
 
 # ---------------------------------------------------------------------- flags
@@ -107,7 +119,8 @@ class Reading:
 @allow_storage
 @dataclass
 class Record:
-    value: i64
+    lo: i64
+    hi: i64
     flags: u32
     agree_count: u32
     sources_read: u32
@@ -161,6 +174,57 @@ def lower_median(values: list) -> int:
     always a number that some source actually reported."""
     ordered = sorted(values)
     return ordered[(len(ordered) - 1) // 2]
+
+
+def tolerance_bound(magnitude: int, tol_abs: int, tol_rel_bps: int) -> int:
+    """The largest shift a reading may have and still be `within` tolerance.
+
+    If |x - m| does not fit the absolute part, then
+    |x - m| * 10000 <= rel * max(|x|, |m|) and |x| <= |m| + |x - m| <= magnitude +
+    |x - m|, so the shift is at most ceil(rel * magnitude / (10000 - rel)).  The
+    result is an integer; no float ever enters the stored value.
+
+    `magnitude` is the largest absolute reported value (>= |median|)."""
+    if tol_rel_bps <= 0:
+        return tol_abs
+    numerator = tol_rel_bps * magnitude
+    denominator = 10000 - tol_rel_bps
+    relative = (numerator + denominator - 1) // denominator
+    if relative > tol_abs:
+        return relative
+    return tol_abs
+
+
+def band(values: list, complete: bool, tol_abs: int, tol_rel_bps: int) -> tuple:
+    """The stored interval for a reported value set.
+
+    A complete read is canonical: lo == hi == lower median, with no tolerance slack.
+    An incomplete read publishes the exact tolerance ball around the median; the
+    validator additionally requires its own full-set median to be inside it."""
+    median = lower_median(values)
+    if complete:
+        return median, median
+    magnitude = 0
+    for value in values:
+        absolute = value if value >= 0 else -value
+        if absolute > magnitude:
+            magnitude = absolute
+    half = tolerance_bound(magnitude, tol_abs, tol_rel_bps)
+    return median - half, median + half
+
+
+def relation(lo: int, hi: int, threshold: int) -> str:
+    """Compare a threshold with every value the stored interval admits.
+
+    ABOVE means every admitted value is at least the threshold; BELOW means every
+    admitted value is strictly below it; INDETERMINATE means the reading cannot
+    decide.  The union of ABOVE / BELOW / INDETERMINATE is total and the answer can
+    never be the opposite of an admitted value."""
+    if lo >= threshold:
+        return "ABOVE"
+    if hi < threshold:
+        return "BELOW"
+    return "INDETERMINATE"
 
 
 def extract_path(doc, path: str):
@@ -331,7 +395,7 @@ class Corroborate(gl.contract.Contract):
             raise gl.vm.UserError("invalid unit")
         if tol_rel_bps > MAX_TOL_REL_BPS:
             raise gl.vm.UserError("invalid tolerance")
-        if tol_abs < 0:
+        if tol_abs < 0 or tol_abs > MAX_TOL_ABS:
             raise gl.vm.UserError("invalid tolerance")
         if len(self.feeds) >= MAX_FEEDS:
             raise gl.vm.UserError("too many feeds")
@@ -499,7 +563,8 @@ class Corroborate(gl.contract.Contract):
                 )
             )
         return Record(
-            value=int(proposal["value"]),
+            lo=int(proposal["lo"]),
+            hi=int(proposal["hi"]),
             flags=int(proposal["flags"]),
             agree_count=int(proposal["agree_count"]),
             sources_read=int(proposal["sources_read"]),
@@ -531,7 +596,8 @@ class Corroborate(gl.contract.Contract):
                 }
             )
         return {
-            "value": int(record.value),
+            "lo": int(record.lo),
+            "hi": int(record.hi),
             "flags": int(record.flags),
             "status": status_text(int(record.flags)),
             "agree_count": int(record.agree_count),
@@ -545,12 +611,21 @@ class Corroborate(gl.contract.Contract):
         }
 
     @gl.public.view
-    def value(self, feed_id: str) -> int:
-        """The last verified value, scaled. Read `status` before you trust it."""
+    def compare(self, feed_id: str, threshold: int) -> str:
+        """Threshold the reading without hiding the uncertainty.
+
+        ABOVE: every value the stored interval admits is at least `threshold`.
+        BELOW: every value it admits is strictly below `threshold`.
+        INDETERMINATE: the reading cannot decide; do not act.
+
+        For a strict `value > threshold` rule pass `threshold + 1` (the stored
+        values are scaled integers).  A complete read has lo == hi, so every
+        threshold is decidable; only an incomplete read has a non-empty
+        INDETERMINATE region.  Gate on `is_trustworthy` before acting."""
         record = self.records.get(feed_id)
         if record is None:
             raise gl.vm.UserError("unknown feed")
-        return int(record.value)
+        return relation(int(record.lo), int(record.hi), int(threshold))
 
     @gl.public.view
     def status(self, feed_id: str) -> str:
@@ -719,7 +794,8 @@ def build_proposal(
         # Nothing was read at all. The committee will reject this and the network will
         # rotate the leader; there is nothing sensible to publish.
         return {
-            "value": 0,
+            "lo": 0,
+            "hi": 0,
             "flags": FLAG_PARTIAL,
             "agree_count": 0,
             "sources_read": 0,
@@ -728,7 +804,7 @@ def build_proposal(
             "readings": [],
         }
 
-    value = lower_median(values)
+    median = lower_median(values)
 
     table = []
     agree = 0
@@ -737,7 +813,7 @@ def build_proposal(
     for entry in readings:
         if not entry["ok"]:
             continue
-        agrees = within(entry["value"], value, tol_abs, tol_rel)
+        agrees = within(entry["value"], median, tol_abs, tol_rel)
         if agrees:
             agree += 1
         if entry["data_ts"] != 0 and max_age > 0:
@@ -757,9 +833,12 @@ def build_proposal(
         )
 
     flags = flags_for(agree, len(table), len(sources), stale)
+    complete = len(values) == len(sources)
+    lo, hi = band(values, complete, tol_abs, tol_rel)
 
     return {
-        "value": int(value),
+        "lo": int(lo),
+        "hi": int(hi),
         "flags": int(flags),
         "agree_count": int(agree),
         "sources_read": int(len(table)),
@@ -786,7 +865,8 @@ def verify_proposal(
     this validator made itself, and every aggregate with the aggregate this validator
     computed itself."""
     for key in (
-        "value",
+        "lo",
+        "hi",
         "flags",
         "agree_count",
         "sources_read",
@@ -834,14 +914,43 @@ def verify_proposal(
             return False
 
     # Recompute the aggregate from the validator's own values, over the same source
-    # set the leader used.
+    # set the leader used.  The aggregate is exact: either the complete set collapses
+    # to one value, or the published interval is exactly the tolerance ball around
+    # the median.  A value within the tolerance is never accepted in its place.
     my_values = []
     for index in seen:
         my_values.append(int(my_by_index[index]["value"]))
     if len(my_values) == 0:
         return False
     my_median = lower_median(my_values)
-    if not within(int(proposal["value"]), my_median, tol_abs, tol_rel):
+    my_complete = len(seen) == len(sources)
+    expected_lo, expected_hi = band(my_values, my_complete, tol_abs, tol_rel)
+    raw_lo = proposal["lo"]
+    raw_hi = proposal["hi"]
+    # int(100.5) is 100: a float would silently truncate into a valid band.  The
+    # stored interval is an integer pair, so only an integer pair is accepted.
+    if not isinstance(raw_lo, int) or isinstance(raw_lo, bool):
+        return False
+    if not isinstance(raw_hi, int) or isinstance(raw_hi, bool):
+        return False
+    lo = raw_lo
+    hi = raw_hi
+    if lo != expected_lo or hi != expected_hi:
+        return False
+    if lo > hi:
+        return False
+
+    # The validator's own full-set reading must lie inside the published interval.
+    # For a complete read this is the same median; for a partial read it is what a
+    # consumer would have seen had the omitted source been readable.
+    full_values = []
+    for entry in mine:
+        if entry["ok"]:
+            full_values.append(int(entry["value"]))
+    if len(full_values) == 0:
+        return False
+    full_median = lower_median(full_values)
+    if full_median < lo or full_median > hi:
         return False
 
     my_agree = 0
@@ -861,16 +970,17 @@ def verify_proposal(
         if bool(entry["agrees"]) != mine_agrees:
             return False
 
-    # A source the leader did not report but this validator could read: if it
-    # disagrees with the aggregate, the leader left out a dissent.  A source this
-    # validator could not read either is not held against the leader.
+    # A source the leader did not report but this validator could read must be
+    # inside the published interval.  A source outside it is a hidden dissent: the
+    # interval pretends the source does not exist.  A source this validator could
+    # not read either is not held against the leader.
     for index in range(len(sources)):
         if index in seen:
             continue
         own = my_by_index.get(index)
         if own is None or not own["ok"]:
             continue
-        if not within(int(own["value"]), int(proposal["value"]), tol_abs, tol_rel):
+        if int(own["value"]) < lo or int(own["value"]) > hi:
             return False
 
     # Recompute the flags.

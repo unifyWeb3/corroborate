@@ -4,6 +4,10 @@ This document is for a builder who wants to use `corroborate`, or wants to copy 
 pattern into their own contract.  It walks through one `refresh` transaction from the
 caller to the stored record.
 
+The short version: the stored result is **never a point estimate chosen inside a
+tolerance**.  A complete read collapses to one exact median; an incomplete read stores
+an interval and the only threshold API is `compare`, which can answer `INDETERMINATE`.
+
 ---
 
 ## 0. The shape of the problem
@@ -16,20 +20,18 @@ number comes from the web, so:
 * the leader of a transaction is just one node - it can be wrong, lazy or hostile,
 * and a stored number without evidence cannot be checked later.
 
-GenLayer already gives us the tool for the third problem: the **Equivalence Principle**.
-A leader proposes a result, and validators independently decide whether to accept it.  What
-this contract adds is the *rule* for that decision, and the *evidence* that is stored with
-the result.
+GenLayer gives us the tool for the third problem: the **Equivalence Principle**.  A leader
+proposes a result, and validators independently decide whether to accept it.  What this
+contract adds is the *rule* for that decision, and the *evidence* stored with it.
 
-The rule used here is **tolerance equivalence**:
+The rule used here is **exact readings, exact aggregate, explicit uncertainty**:
 
-> A reading is accepted only if an independently re-derived reading, computed by a
-> validator from bytes it fetched itself, agrees with the leader's proposal inside the
-> feed's declared tolerance, and every per-source claim in the proposal is corroborated by
-> the validator's own read of that same source.
-
-It is numeric, not textual: the compared values are scaled integers, so the comparison is
-integer arithmetic, and it is identical on every node.
+> Every reported per-source reading is bound to the validator's own reading by a digest
+> of that reading.  When every declared source was read, the aggregate is the exact
+> lower median of those readings: `lo == hi`.  When a declared source was missing, the
+> aggregate is the exact tolerance interval around the median, and the validator must
+> also find its own full-set median inside that interval.  A consumer thresholds the
+> result with `compare`, never with a point.
 
 ---
 
@@ -43,13 +45,16 @@ The curator declares, once, per feed:
 | `value_path` | dotted path to the number inside the JSON document, e.g. `rates.EUR` |
 | `time_path` | optional dotted path to the source's own unix timestamp |
 | `scale` | decimal multiplier, e.g. `100000` for five decimals of a rate |
-| `tol_rel_bps` | relative tolerance in basis points (100 bp = 1 %) |
-| `tol_abs` | absolute tolerance in scaled units (for values near zero) |
+| `tol_rel_bps` | relative tolerance in basis points, capped at 2000 (20 %) |
+| `tol_abs` | absolute tolerance in scaled units, capped at `MAX_VALUE / 4` |
 | `max_age_seconds` | staleness limit for the source-declared timestamps |
 | `min_quorum` | how many sources must agree with the median |
 
 The configuration is immutable once registered.  It is *not* consensus-derived: the curator
 is trusted for it.  Everything that describes an actual reading *is* consensus-derived.
+
+The caps are part of the safety argument: they keep the interval
+`median +/- B` inside `i64` for every value the contract accepts.
 
 ---
 
@@ -73,12 +78,12 @@ is trusted for it.  Everything that describes an actual reading *is* consensus-d
    |    doc    = json.loads(body)            |
    |    value  = extract(doc, value_path)    |
    |    ts     = extract(doc, time_path)     |
-   |  value = median(values)                 |
-   |  agree = sources within tolerance       |
-   |  flags = disputed / partial / stale     |
-   |  proposal = {value, flags, agree_count, |
-   |              sources_read, read_at,     |
-   |              data_ts, readings[]}       |
+   |  median = lower median of the readings  |
+   |  complete = every source was read       |
+   |  lo, hi = exact median, or median +/- B |
+   |  flags  = disputed / partial / stale    |
+   |  proposal = {lo, hi, flags, counts,     |
+   |              read_at, data_ts, readings}|
    +------------------------------------------+
           |  proposal
           v
@@ -86,9 +91,9 @@ is trusted for it.  Everything that describes an actual reading *is* consensus-d
    |        VALIDATORS (every other node)    |
    |  fetch every source again (nondet)      |
    |  re-derive values, digests, timestamps  |
-   |  recompute median, agreeing set, quorum,|
-   |  flags and read time                    |
-   |  compare with the proposal              |
+   |  recompute median and the exact band    |
+   |  require the full-set median inside it  |
+   |  recompute agreeing set, quorum, flags  |
    |  -> accept (True) or reject (False)     |
    +------------------------------------------+
           |  accepted proposal
@@ -98,7 +103,7 @@ is trusted for it.  Everything that describes an actual reading *is* consensus-d
    +------------------------------------------+
 ```
 
-The whole of steps "leader" and "validators" happens inside the non-deterministic block.
+The whole of "leader" and "validators" happens inside the non-deterministic block.
 Storage writes, contract calls and message emission happen **after** it, in deterministic
 code - the GenVM linter rejects the other order.
 
@@ -126,37 +131,55 @@ Then the aggregate:
   * `DISPUTED` - some source that was read is not within the tolerance of the median,
   * `PARTIAL` - fewer sources were read than were declared,
   * `STALE` - a source's own timestamp is older than `max_age_seconds`.
+* `complete = len(R) == len(sources)`.
+* `lo, hi`:
+  * complete: `lo = hi = m`;
+  * incomplete: `lo = m - B`, `hi = m + B`, where
+    `B = max(tol_abs, ceil(tol_rel_bps * M / (10000 - tol_rel_bps)))` and
+    `M = max(|v| for v in R)`.
+
+The lower median is used on purpose: it is always one of the observed values, so the
+interval is centered on a number some source actually reported.
 
 A stale source still votes: excluding it would make the aggregate depend on a freshness
 decision that the leader and the validator could make differently.  Instead the reading is
 flagged and the consumer guard refuses it.
 
-The lower median is used on purpose: it is always one of the observed values, so the
-published number is always a number that some source actually reported, and the median
-cannot be a value nobody saw.
+**Why `B` is the tolerance bound.**  If a reading `x` is within tolerance of `m`, then
+either `|x - m| <= tol_abs`, or `|x - m| * 10000 <= tol_rel_bps * max(|x|, |m|)`.  In
+the second case, with `d = |x - m|` and `|x| <= |m| + d <= M + d`:
+
+```
+d * 10000 <= rel * (M + d)   =>   d <= rel * M / (10000 - rel)
+```
+
+so `d <= B`.  Every value that the declared tolerance would call "in agreement with the
+median" is inside the interval.  No float is used: `B` is computed with integer ceiling.
 
 ---
 
 ## 4. The validator, step by step
 
 The validator does **not** look at the leader's numbers and ask whether they look
-reasonable.  It re-reads the world and re-derives the reading, then compares.
+reasonable.  It re-reads the world, re-derives the reading, and compares.
 
 | # | check | what it protects against |
 |:--|:--|:--|
 | 1 | the proposal has every expected field and `read_at` equals the pinned transaction timestamp | a fabricated read time, a malformed proposal |
-| 2 | the proposal's reading table names declared sources only, once each | a duplicated or invented source |
-| 3 | the validator also read every source the leader used | an aggregate the validator cannot reproduce |
-| 4 | `|leader_value_i - validator_value_i| <= tolerance` for every source | a leader that reports a number the source never showed |
-| 5 | the leader's digest equals the digest of the validator's own reading of that source | a leader that reports a reading the validator did not make |
+| 2 | the reading table names declared sources only, once each | a duplicated or invented source |
+| 3 | the validator also read every source the leader reported | an aggregate the validator cannot reproduce |
+| 4 | `|leader_value_i - validator_value_i| <= tolerance` for every reported source | a leader that reports a number the source never showed |
+| 5 | the leader's digest equals `keccak256(index:validator_value_i)` | a leader that reports a reading the validator did not make (this is the exact binding) |
 | 6 | the source timestamps agree within `TS_TOL_SECONDS` | a leader that invents a freshness timestamp |
-| 7 | `|leader_value - validator_median| <= tolerance` over the same source set | an aggregate that is not the median of the readings |
-| 8 | the recomputed agreeing count equals the leader's `agree_count` | an inflated quorum |
-| 9 | the recomputed agreeing count satisfies `min_quorum` | publishing a number nobody agrees on |
-| 10 | the recomputed flags equal the leader's flags | a status that hides a disagreement |
-| 11 | `sources_read` and `data_ts` match the recomputation | an incomplete or invented provenance record |
-| 12 | the per source verdict equals the validator's own verdict | a leader that calls a dissenting source an agreeing one |
-| 13 | a source the leader left out but the validator could read agrees with the aggregate | a leader that hid a dissent by omission |
+| 7 | **the interval is exact**: complete -> `lo == hi == validator_median`; incomplete -> `lo == m - B`, `hi == m + B` with the validator's own `B` | an aggregate shifted inside the tolerance |
+| 8 | `lo <= hi`, and both are integers (a float such as `100.5` is rejected, not truncated) | a malformed or type-confused band |
+| 9 | the validator's **full-set median** is inside `[lo, hi]` | a band that does not cover what the validator actually read |
+| 10 | the recomputed agreeing count equals the leader's `agree_count` | an inflated quorum |
+| 11 | the recomputed agreeing count satisfies `min_quorum` | publishing a number nobody agrees on |
+| 12 | the recomputed flags equal the leader's flags | a status that hides a disagreement |
+| 13 | `sources_read` and `data_ts` match the recomputation | an incomplete or invented provenance record |
+| 14 | the per-source verdict equals the validator's own verdict | a leader that calls a dissenting source an agreeing one |
+| 15 | a source the leader omitted but the validator could read lies inside `[lo, hi]` | a leader that hid a dissent by omission |
 
 If any check fails the validator returns `False`.  GenLayer then rotates the leader.  If no
 leader can satisfy the committee the transaction ends **undetermined** and **nothing is
@@ -173,9 +196,6 @@ def validator_fn(result) -> bool:
     ...
 ```
 
-A source the leader could not read is not held against it: only a source the validator
-*could* read and that disagrees with the aggregate turns the omission into a rejection.
-
 ### What the digest covers, and why
 
 The digest is `keccak256("<source index>:<scaled value>")` - the digest of the *reading*.
@@ -183,25 +203,34 @@ It is deliberately not a digest of the raw response body.
 
 The reason is verification.  A page that ticks between the leader's read and the
 validator's read has two different bodies, so two different body digests, even though both
-nodes read the same value.  Accepting that case means accepting a digest the committee
-cannot confirm, and a stored digest that nobody verified is a leader claim rather than a
-fact.  The reading digest has neither problem: both sides compute it from their own
-extraction, and it must be identical.  A consequence worth stating plainly: the stored
-record identifies *what was read* (which source, which value), not *which bytes came back
-over the wire*.
+nodes derive the same value.  Accepting that case would mean accepting a digest the
+committee cannot confirm, and a stored digest that nobody verified is a leader claim
+rather than a fact.  The reading digest has neither problem: both sides compute it from
+their own extraction, and it must be identical.  A consequence worth stating plainly: the
+stored record identifies *what was read* (which source, which value), not *which bytes
+came back over the wire*.
+
+The digest is also what makes the per-source reading exact (under the standard
+collision-resistance assumption for keccak256).  The `within` check on the same value
+(check 4) is a redundant guard; the digest is the binding constraint.
 
 ### The tolerance, precisely
 
 ```
 diff = |a - b|
 within(a, b) = diff <= tol_abs  OR  diff * 10000 <= tol_rel_bps * max(|a|, |b|)
+B(M) = max(tol_abs, ceil(tol_rel_bps * M / (10000 - tol_rel_bps)))
 ```
 
-`a` is the leader's value, `b` the validator's.  Both sides are scaled integers, so this
-is exact integer arithmetic and every node computes the same boolean.
+Both sides are scaled integers, so this is exact integer arithmetic and every node
+computes the same boolean.  The tolerance has exactly two jobs:
 
-The absolute term exists for values near zero (an interest rate of 0.0001 would need an
-unusable relative tolerance), the relative term for values that move proportionally.
+1. it classifies a reported source as agreeing or disagreeing with the median
+   (`DISPUTED` and the quorum), and
+2. it sets the width of the interval for an incomplete read.
+
+It is **not** used to accept an aggregate that is merely close to the median.  That was
+the rejected v1 bug: a leader could store `median + tol` and every validator accepted it.
 
 ---
 
@@ -209,7 +238,7 @@ unusable relative tolerance), the relative term for values that move proportiona
 
 ```
 Record {
-  value            the aggregate (median of the sources that voted)
+  lo, hi           the exact median when complete, else [median-B, median+B]
   flags            DISPUTED | PARTIAL | STALE
   agree_count      sources that agree with the median
   sources_read     sources that were read
@@ -259,13 +288,22 @@ their own time.
 | situation | what the committee does | what the consumer sees |
 |:--|:--|:--|
 | the sources disagree, but the quorum still holds | the reading is published, the outlier is kept in the provenance table with `agrees = false` | `flags = DISPUTED`, `status = "disputed"`, `is_trustworthy = false` |
-| a source cannot be read | the source does not vote, the reading is published with the gap disclosed | `flags = PARTIAL`, `sources_read < sources_declared`, `is_trustworthy = false` |
+| a source cannot be read | the source does not vote; the reading is published as an interval with the gap disclosed | `flags = PARTIAL`, `sources_read < sources_declared`, `is_trustworthy = false`, `compare` may return `INDETERMINATE` |
 | the sources are so far apart that the quorum fails | the proposal is rejected, the leader is rotated | nothing is written; the reading keeps its previous value |
-| the leader's value is not reproducible by the validator | the proposal is rejected | nothing is written |
-| the page changed between the leader and the validator | accepted only if the derived value did not change | the digest of the reading is stored |
+| the leader's interval is not the exact median/ball | the proposal is rejected | nothing is written |
+| the page changed between the leader and the validator | accepted only if the derived value did not change; the reading digest is identical | the digest of the reading is stored |
+| the leader omits a source the validator can read | accepted only if the source is inside `[lo, hi]` and the full-set median is inside too | `PARTIAL` plus the interval |
 
 The consumer decides what to do with a `DISPUTED` or `PARTIAL` reading.  The primitive
 publishes the evidence and the status; the policy belongs to the consumer.
+
+**A note on the missing-source case.**  If no validator can read a declared source, no
+tolerance can bound what that source would have said.  The record is still `PARTIAL` and
+`is_trustworthy` is false, which is the refusal signal.  `compare` is a statement about
+the stored interval over the readable sources; it is not a guarantee about an unreadable
+one.  This is why the consumer example gates on `is_trustworthy` before acting on
+`compare`, and why the gate is part of the documented interface rather than an
+optional nicety.
 
 ---
 
@@ -275,16 +313,26 @@ publishes the evidence and the status; the policy belongs to the consumer.
 feed = gl.contract.get_at(FEED_ADDRESS)
 view = feed.view(state=StorageView.LATEST_FINALIZED)   # pin the read to the final state
 if view.is_trustworthy("eur-usd", 3600):
-    price = view.value("eur-usd")
+    relation = view.compare("eur-usd", threshold)       # ABOVE / BELOW / INDETERMINATE
+    if relation == "ABOVE":
+        ...  # every value the reading admits is >= threshold
+    elif relation == "BELOW":
+        ...  # every value the reading admits is < threshold
+    else:
+        ...  # the reading cannot decide; do not act
 ```
 
 Two things matter here:
 
-* `StorageView.LATEST_FINALIZED` - a public RPC can serve a not yet final state right after a
-  receipt, and `LATEST_NON_FINAL` (the default) reads that.  A consumer that must not act
-  on a reading that can still change pins the final state.
-* `is_trustworthy` - reading `value` alone gives the last stored number whatever its
-  status.  The guard is what turns "a number" into "a number the committee vouched for".
+* `StorageView.LATEST_FINALIZED` - a public RPC can serve a not yet final state right after
+  a receipt, and the default view reads that.  A consumer that must not act on a reading
+  that can still change pins the final state.
+* `is_trustworthy` - `compare` alone is a statement about the stored interval, not a
+  statement that the feed is fresh or that every source was read.  The guard requires
+  `flags == 0`, the quorum, a complete read and fresh data within the caller's max age.
+
+For a strict `value > threshold` rule, pass `threshold + 1`: the stored values are scaled
+integers and `ABOVE` means `value >= threshold`.
 
 The GenLayer direct test runner cannot execute a cross-contract call, so the consumer's
 decision rule is exposed as a plain function (`decide`) and is unit tested that way.  The
@@ -303,12 +351,13 @@ cross-contract call itself is exercised by the live run.
   omitted source means `sources_read < sources_declared`, therefore the `PARTIAL` flag,
   therefore `is_trustworthy = false`.  A consumer that wants full coverage checks
   `status == "agreed"`.
+* **The interval is only as good as the declared tolerance.**  A curator can declare a
+  tolerance wide enough to accept almost anything; the committee verifies the readings
+  against the declared sources, not the declaration.  The 2000 bp cap bounds how wide the
+  interval can get, but it does not make a bad source good.
 * **A boundary case can make the committee reject a correct reading.**  If a source sits
   exactly on the tolerance boundary, the leader and the validator can disagree about
   whether it agrees.  The result is a rotation, not a wrong number.
-* **The curator is trusted for the configuration.**  A curator can point a feed at sources
-  it controls, or declare a tolerance wide enough to accept anything.  The committee
-  verifies the readings against the declared sources; it cannot verify the declaration.
 * **One trusted key is still one key.**  The curator is a single address.  A multi-curator
   scheme (a council, or a quorum of curators) would be the natural next step, and it would
   not change the consensus mechanism at all.

@@ -23,6 +23,7 @@ from helpers import (  # noqa: E402
     source,
     three_sources,
     two_sources,
+    value_of,
 )
 
 FEED = "btc-usd"
@@ -217,7 +218,7 @@ def test_refresh_publishes_the_value_and_its_provenance(direct_vm, direct_deploy
     contract.refresh(FEED)
 
     record = contract.latest(FEED)
-    assert record["value"] == 100
+    assert value_of(record) == 100
     assert record["flags"] == 0
     assert record["status"] == "agreed"
     assert record["agree_count"] == 2
@@ -247,7 +248,7 @@ def test_refresh_publishes_the_median(direct_vm, direct_deploy):
     contract.refresh(FEED)
 
     record = contract.latest(FEED)
-    assert record["value"] == 101
+    assert value_of(record) == 101
     assert record["status"] == "agreed"
 
 
@@ -260,7 +261,7 @@ def test_refresh_scales_the_value(direct_vm, direct_deploy):
     contract.refresh(FEED)
 
     # 19.99 and 20.01 at a scale of 100 are 1999 and 2001, the median is 1999
-    assert contract.latest(FEED)["value"] == 1999
+    assert value_of(contract.latest(FEED)) == 1999
     assert contract.latest(FEED)["readings"][0]["value"] == 1999
     assert contract.latest(FEED)["readings"][1]["value"] == 2001
 
@@ -275,7 +276,7 @@ def test_refresh_marks_an_outlier_source_as_disputed(direct_vm, direct_deploy):
     contract.refresh(FEED)
 
     record = contract.latest(FEED)
-    assert record["value"] == 100
+    assert value_of(record) == 100
     assert record["flags"] == 1  # DISPUTED
     assert record["status"] == "disputed"
     assert record["agree_count"] == 2
@@ -296,7 +297,9 @@ def test_refresh_marks_an_unreachable_source_as_partial(direct_vm, direct_deploy
     contract.refresh(FEED)
 
     record = contract.latest(FEED)
-    assert record["value"] == 100
+    # a partial read is an interval, not a point: 100/101 with tol_abs=0 and
+    # tol_rel=100 bps gives B = ceil(100 * 101 / 9900) = 2.
+    assert (record["lo"], record["hi"]) == (98, 102)
     assert record["flags"] == 2  # PARTIAL
     assert record["status"] == "partial"
     assert record["sources_read"] == 2
@@ -420,7 +423,8 @@ def test_the_validator_rejects_a_tampered_value(direct_vm, direct_deploy):
 
     contract.refresh(FEED)
     proposal = proposal_from_record(contract.latest(FEED))
-    proposal["value"] = 999999
+    proposal["lo"] = 999999
+    proposal["hi"] = 999999
 
     assert direct_vm.run_validator(leader_result=proposal) is False
 
@@ -603,7 +607,7 @@ def test_an_injected_body_does_not_change_the_value(direct_vm, direct_deploy):
     contract.refresh(FEED)
 
     record = contract.latest(FEED)
-    assert record["value"] == 100
+    assert value_of(record) == 100
     assert record["readings"][0]["value"] == 100
 
 
@@ -688,11 +692,14 @@ def test_the_validator_rejects_a_leader_that_hid_a_dissent(direct_vm, direct_dep
 
     contract.refresh(FEED)
     proposal = proposal_from_record(contract.latest(FEED))
-    # the leader drops the dissenting third source and adjusts its counts
+    # the leader drops the dissenting third source and adjusts its counts to a
+    # consistent-looking partial record (tol_rel=100 bps over [100, 101] -> B=2)
     proposal["readings"] = [r for r in proposal["readings"] if r["value"] != 5]
     proposal["sources_read"] = 2
     proposal["agree_count"] = 2
     proposal["flags"] = 2  # PARTIAL
+    proposal["lo"] = 98
+    proposal["hi"] = 102
 
     assert direct_vm.run_validator(leader_result=proposal) is False
 
@@ -752,7 +759,7 @@ def test_refresh_rounds_a_float_to_the_declared_scale(direct_vm, direct_deploy):
 
     contract.refresh(FEED)
 
-    assert contract.latest(FEED)["value"] == 150
+    assert value_of(contract.latest(FEED)) == 150
 
 
 def test_refresh_treats_a_boolean_as_a_failed_source(direct_vm, direct_deploy):
@@ -905,14 +912,21 @@ def test_is_trustworthy_is_false_when_the_reading_is_too_old(direct_vm, direct_d
 
 def test_the_consumer_refuses_an_untrusted_reading(direct_deploy):
     consumer = direct_deploy(CONSUMER, "0x" + "11" * 20)
-    assert consumer.evaluate(False, 100, 50) is False
-    assert consumer.evaluate(True, 10, 50) is False
-    assert consumer.evaluate(True, 100, 50) is True
+    assert consumer.evaluate(False, "ABOVE") == "UNTRUSTED"
+    assert consumer.evaluate(False, "BELOW") == "UNTRUSTED"
+    assert consumer.evaluate(False, "INDETERMINATE") == "UNTRUSTED"
 
 
-def test_the_consumer_accepts_a_trusted_reading(direct_deploy):
+def test_the_consumer_does_not_guess_an_indeterminate_reading(direct_deploy):
     consumer = direct_deploy(CONSUMER, "0x" + "11" * 20)
-    assert consumer.evaluate(True, 100, 50) is True
+    assert consumer.evaluate(True, "INDETERMINATE") == "UNDECIDED"
+    assert consumer.evaluate(True, "ABOVE") == "ACCEPT"
+    assert consumer.evaluate(True, "BELOW") == "REJECT"
+
+
+def test_the_consumer_accepts_only_a_definite_trusted_above(direct_deploy):
+    consumer = direct_deploy(CONSUMER, "0x" + "11" * 20)
+    assert consumer.evaluate(True, "ABOVE") == "ACCEPT"
 
 
 # ------------------------------------------------------------ storage abuse
@@ -947,7 +961,7 @@ def test_a_second_refresh_overwrites_the_first(direct_vm, direct_deploy):
     contract.refresh(FEED)
 
     record = contract.latest(FEED)
-    assert record["value"] == 200
+    assert value_of(record) == 200
     assert len(record["readings"]) == 2
 
 
@@ -962,6 +976,7 @@ def test_a_caller_cannot_write_a_value_directly(direct_vm, direct_deploy):
         if not name.startswith("_") and callable(getattr(cls, name, None))
     )
     assert public == [
+        "compare",
         "disable_feed",
         "emit_transfer",
         "feed",
@@ -972,7 +987,6 @@ def test_a_caller_cannot_write_a_value_directly(direct_vm, direct_deploy):
         "register_feed",
         "source_count",
         "status",
-        "value",
     ]
 
 
@@ -984,7 +998,7 @@ def test_the_curator_cannot_write_a_value_directly(direct_vm, direct_deploy):
     with direct_vm.expect_revert("unknown feed"):
         contract.latest(FEED)
     with direct_vm.expect_revert("unknown feed"):
-        contract.value(FEED)
+        contract.compare(FEED, 100)
     with direct_vm.expect_revert("unknown feed"):
         contract.status(FEED)
     assert contract.is_trustworthy(FEED, 3600) is False

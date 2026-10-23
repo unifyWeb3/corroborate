@@ -5,6 +5,12 @@ A tolerance-consensus data feed primitive for GenLayer Intelligent Contracts.
 Status: **approved design, feature frozen after this document** (only fixes for verified
 blockers/security issues may be added afterwards).
 
+> **Superseded for the aggregate rule and the SDK pin.**  The submission built from this
+> design was rejected: its stored point aggregate could move inside the tolerance, and its
+> lint environment resolved a legacy SDK.  The corrected design is
+> `state/DESIGN-fix.md`; the diagnosis is `state/REVIEW-FIX.md`.  The rest of this file is
+> the original v1 design and is kept as history.
+
 ---
 
 ## 1. Purpose

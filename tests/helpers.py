@@ -49,7 +49,8 @@ def proposal_from_record(record):
     The stored record carries the same fields the proposal carries, so a test can take
     the honest proposal apart and hand a tampered one to the validator."""
     return {
-        "value": record["value"],
+        "lo": record["lo"],
+        "hi": record["hi"],
         "flags": record["flags"],
         "agree_count": record["agree_count"],
         "sources_read": record["sources_read"],
@@ -66,6 +67,12 @@ def proposal_from_record(record):
             for r in record["readings"]
         ],
     }
+
+
+def value_of(record):
+    """The exact value of a complete record; a complete reading has lo == hi."""
+    assert record["lo"] == record["hi"], record
+    return record["lo"]
 
 
 def keccak256_hex(data: bytes) -> str:

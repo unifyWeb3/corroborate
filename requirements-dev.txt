@@ -1,0 +1,21 @@
+# Pinned development and verification toolchain.
+#
+# The contract imports are from the 0.6 SDK line.  The stable genvm-linter 0.11.0
+# resolves the legacy genlayerlabs/genvm repository (v0.2.16 / v0.3.0-rc7) whose
+# SDK has no genlayer.contract, genlayer.storage or genlayer.vm modules, so lint
+# fails with source import errors.  These pins are the pairing that lints,
+# validates and tests the contract against genvm-manager v0.6.0-rc10.
+#
+# Python 3.12 is required by genlayer-test 0.30.0rc2.
+genvm-linter==0.11.1rc2
+genlayer-test==0.30.0rc2
+genlayer-py==0.19.0rc2
+
+# Test and verification helpers.
+pytest==9.1.1
+pycryptodome==3.24.1
+eth-account==0.14.0
+web3==8.0.0
+
+# The linter and test runner resolve the SDK release from this pin.
+# Set it in the environment as well: GENVM_VERSION=v0.6.0-rc10
