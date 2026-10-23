@@ -312,3 +312,37 @@ Baseline tag `rejected-v1` = `a698b23`.  The rejected deployment stays
 * `docs/CONSENSUS.md` was rewritten for the interval rule; `state/DESIGN.md` is marked
   superseded for the aggregate and SDK pin.  `docs/LIVE-RUN.md` is left untouched as the
   dated transcript of the rejected deployment.
+
+## STAGE 6 - fresh keys and the new deployment
+
+* Deleted the v1 key file and generated three fresh throwaway keys (mode 600, gitignored,
+  never printed; addresses only): deployer `0xa094c862d484E038013e0f44f0E41D80b4C92dD4`,
+  alice `0xe5b0ab3D9F16598b1f236DC535458088b779aA8f`, bob
+  `0x7640a791c4F547806B510914A0feE89EeD34312F`.  Funded with `sim_fundAccount`; the
+  responses are in `docs/LIVE-RUN-FIX.md` section 1.
+* **New deployment:** `0x6D0Cd00A0d3eb9C86eEE81f22cb05e3B51E070Ed`, deploy tx
+  `0x28a5527ac21fc50d9b77549f37b29953600d38a5b293f7ceb17d5872f6f671b3`.  Source read back
+  with `gen_getContractCode`: sha256
+  `e2bc11ed31ece8a747520a6824a51438283e532ba33fa9b3b42f9130468c6957` (34992 bytes),
+  identical true.
+* Complete feed `eur-usd`: `lo == hi == 89153`, `agreed`, 3/3, trustworthy true;
+  `compare(89153)` = ABOVE, `compare(89154)` = BELOW.  Register
+  `0x6e542d58...`, refresh `0x2f1a101a...`.
+* Partial feed `eur-usd-partial` (one `.invalid` source): `lo=87793`, `hi=90513`, 3/4,
+  `partial`, trustworthy false; `compare(87793)` = ABOVE, `compare(89153)` =
+  INDETERMINATE, `compare(90514)` = BELOW.  Register `0x9ddd0057...`, refresh
+  `0x23eb8eba...`.  All reads pinned with `LATEST_FINAL`.
+* **Consumer example:** deployed at `0xE0F981ccea23B8Da0c9d52773b3E9403715FA09B`
+  (tx `0x191b58ea...`).  The nested `relation` read returned an HTTP 504 gateway timeout,
+  and the gated `check` write rolled back with
+  `Mode1MessageFeesRequireGenVMPerEmissionSupport: fee-bearing GenVM messages require a
+  message allocation tree` (tx `0x70b06965...`); counters stayed `0/0/0`.  The live
+  cross-contract path is therefore **not** claimed; the feed-level `compare` is the live
+  consumer-facing query and the consumer's `decide` rule is unit tested.
+* Refusals: non-curator register -> `rollback / not the curator` (tx `0x8c4fedf8...`);
+  malformed `sources_json` -> `rollback / invalid sources` (tx `0xaa5ba9e1...`);
+  `feed_count` 2 before and after.  Old v1 deployment remains documented as rejected.
+* Transcript: `docs/LIVE-RUN-FIX.md` (raw log `transcripts/live-run-fix-2026-10-23.txt`,
+  gitignored).  An earlier deploy from the same fresh key
+  (`0xB2F702Cb7419b4d3Ee25606E1811bcC686d32994`, tx `0xaffcd146...`) was made while the
+  live script was being adapted; it is superseded and is not cited as the deliverable.

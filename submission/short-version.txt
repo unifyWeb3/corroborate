@@ -1,9 +1,7 @@
-corroborate lets other genlayer contracts read a web number, with the evidence that it was corroborated.
+corroborate is a genlayer feed: ask for a threshold, get above, below or indeterminate, never a point inside a tolerance.
 
-a curator declares a feed: 2 to 8 https sources, a json path each, a tolerance, a quorum. the leader fetches them all and takes the median. every validator re-fetches them all, re-derives the reading and accepts it only if each value is inside the tolerance of its own value, each digest matches, the aggregate matches its own median, and the quorum matches. only then are the value and provenance written.
+a curator declares 2-8 https sources, a json path each, a tolerance and a quorum. the leader takes the exact lower median. a complete read stores that value (lo == hi); a missing source stores the exact band [median - b, median + b]. every validator re-reads every source, binds each by keccak256(index:value), recomputes the median and band, and rejects any inexact result; an omitted source it could read must be inside.
 
-no language model: the check is integer arithmetic over independently read values. disagreement is a result, not an error: a dissenting source is kept and flagged, an unreadable one flagged partial, no quorum means no publication.
+no language model: integer arithmetic over independent reads. a consumer calls compare(feed, threshold) and gates on is_trustworthy. 95 tests pass, no skips, with exhaustive/random invariants and positive controls.
 
-deployed on studio dev preview, chain id 61997, at 0x81ffed2e3b5558e67d6dcea79b5cead6e247d68f; the source reads back byte for byte as the repo.
-
-78 unit tests pass, each refusal has a positive control. repo: https://github.com/unifyWeb3/corroborate
+pinned: genvm-linter 0.11.1rc2 + genvm-manager v0.6.0-rc10. deployed on studio dev preview (chain 61997) at 0x6d0cd00a0d3eb9c86eee81f22cb05e3b51e070ed; source reads back byte for byte. repo: https://github.com/unifyWeb3/corroborate

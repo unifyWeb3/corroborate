@@ -24,17 +24,15 @@ if view.is_trustworthy("eur-usd", 3600):
     relation = view.compare("eur-usd", threshold)       # ABOVE / BELOW / INDETERMINATE
 ```
 
-**Pinned target SDK:** `genvm-manager v0.6.0-rc10`
-(`py-genlayer:babwp9t37jw9g4j2bccgn14g6x7x9s1f7dsmh7emvz735pz4zxa0`,
-`py-lib-genlayer-std:z7fv8bqpetj3wnjd8sn5s5xfqve3rz8nmtq4npwf2qdvns57zjgg`).
-Lint/validation with the pinned pairing (`genvm-linter 0.11.1rc2`,
-`GENVM_VERSION=v0.6.0-rc10`) passes both contracts; see
-[Pinned SDK and lint](#pinned-sdk-and-lint).
+| status | |
+|:--|:--|
+| **pinned target SDK** | `genvm-manager v0.6.0-rc10` (`py-genlayer:babwp9t37jw9g4j2bccgn14g6x7x9s1f7dsmh7emvz735pz4zxa0`, stdlib `py-lib-genlayer-std:z7fv8bqpetj3wnjd8sn5s5xfqve3rz8nmtq4npwf2qdvns57zjgg`) |
+| **lint + validation** | `GENVM_LINT_BIN=.rcvenv/bin/genvm-lint scripts/lint.sh` -> both contracts `Lint passed (3 checks)` + `Validation passed`, exit 0 |
+| **deployment** | `0x6D0Cd00A0d3eb9C86eEE81f22cb05e3B51E070Ed` on Studio development preview, chain **61997**, `https://studio-dev.genlayer.com/api`; source sha256 `e2bc11ed31ece8a747520a6824a51438283e532ba33fa9b3b42f9130468c6957` |
+| **tests** | 95 pass, 0 skips; live-vs-unit split in [What is verified live and what is only covered by the tests](#what-is-verified-live-and-what-is-only-covered-by-the-tests) |
 
-**Network:** Studio development preview, chain **61997**,
-`https://studio-dev.genlayer.com/api`.  The current deployment address is in
-[Network and deployment](#network-and-deployment); the rejected v1 address is kept there
-for the record.
+The rejected v1 deployment is recorded in [Network and deployment](#network-and-deployment)
+and is not used.
 
 ---
 
@@ -274,7 +272,7 @@ genvm-lint 0.11.1rc2, GENVM_VERSION=v0.6.0-rc10
 ✓ Lint passed (3 checks)
 ✓ Validation passed
   Contract: ExampleConsumer
-  Methods: 3 (2 view, 1 write)
+  Methods: 4 (3 view, 1 write)
 ```
 
 `tests/test_invariants.py::test_every_import_and_api_exists_in_the_pinned_sdk` runs
@@ -290,9 +288,9 @@ with a missing API proves the check can fail.
 | network | Studio development preview (release candidate) |
 | canonical RPC | `https://studio-dev.genlayer.com/api` |
 | chain ID | **61997** |
-| deployed contract | `0xNEW_CONTRACT_ADDRESS` |
-| source identity | `gen_getContractCode` read back, sha256 `NEW_SHA256`, byte-identical to `contracts/corroborate.py` |
-| deploy transaction | `NEW_DEPLOY_TX` |
+| deployed contract | `0x6D0Cd00A0d3eb9C86eEE81f22cb05e3B51E070Ed` |
+| source identity | `gen_getContractCode` read back, sha256 `e2bc11ed31ece8a747520a6824a51438283e532ba33fa9b3b42f9130468c6957` (34992 bytes), byte-identical to `contracts/corroborate.py` |
+| deploy transaction | `0x28a5527ac21fc50d9b77549f37b29953600d38a5b293f7ceb17d5872f6f671b3` |
 | live transcript | `docs/LIVE-RUN-FIX.md` |
 
 The release-candidate environment is separate from the stable Studionet (chain 61999).
@@ -311,9 +309,9 @@ findings and the fix are in `state/REVIEW-FIX.md`, `state/DESIGN-fix.md` and
 
 | | |
 |:--|:--|
-| **live, with transaction hashes** | the new deploy, the deployed source matches the repository byte for byte, `register_feed`, `refresh` against real public APIs, the published interval and its provenance, `compare` returning `ABOVE` / `BELOW` / `INDETERMINATE` with reads pinned to `LATEST_FINALIZED`, the consumer's threshold outcomes, a refused non-curator call, a refused malformed registration, and no state written by a refused call |
-| **unit tests only** | the validator rejecting a shifted aggregate, a shifted/narrowed band, a float band, a forged per-source value/digest, an inflated quorum, a forged status, a forged read time, a dropped source and a hidden dissent; the committee rejecting a reading without a quorum; the injected-body case; the page-drift case; the exhaustive/random interval invariant |
-| **not covered** | the consumer contract's cross-contract call - the direct test runner cannot execute one, so only the consumer's rule is unit tested; the live consumer call is in the transcript.  No live validator *disagreement* (two validators with different views) was observed. |
+| **live, with transaction hashes** | the new deploy, the deployed source matches the repository byte for byte, `register_feed`, `refresh` against real public APIs, the published interval and its provenance, `compare` returning `ABOVE` / `BELOW` / `INDETERMINATE` with reads pinned to `LATEST_FINAL` (the same final-state pin a consumer uses), a refused non-curator call, a refused malformed registration, and no state written by a refused call |
+| **unit tests only** | the validator rejecting a shifted aggregate, a shifted/narrowed band, a float band, a forged per-source value/digest, an inflated quorum, a forged status, a forged read time, a dropped source and a hidden dissent; the committee rejecting a reading without a quorum; the injected-body case; the page-drift case; the exhaustive/random interval invariant; the consumer's `decide` rule |
+| **not covered live** | the example consumer's cross-contract call: the nested `relation` read returned an HTTP 504 gateway timeout and the gated `check` write rolled back with `Mode1MessageFeesRequireGenVMPerEmissionSupport: fee-bearing GenVM messages require a message allocation tree` (see `docs/LIVE-RUN-FIX.md` section 5).  The direct test runner cannot execute a cross-contract call either, so the example is an integration sketch; the consumer-facing query itself (`compare` at the final state) is verified live.  No live validator *disagreement* (two validators with different views) was observed. |
 
 ## Running the tests
 

@@ -62,6 +62,13 @@ class ExampleConsumer(gl.contract.Contract):
         """The decision rule, exposed so it can be tested without a cross contract call."""
         return decide(trusted, relation)
 
+    @gl.public.view
+    def relation(self, feed_id: str, threshold: i64) -> str:
+        """The feed's ABOVE/BELOW/INDETERMINATE answer, pinned to the final state."""
+        feed = gl.contract.get_at(self.feed_address)
+        view = feed.view(state=StorageView.LATEST_FINALIZED)
+        return view.compare(feed_id, threshold)
+
     @gl.public.write
     def check(self, feed_id: str, max_age: u64, min_value: i64):
         """Read the feed and act only when the threshold is decided and trustworthy."""
