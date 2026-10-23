@@ -346,3 +346,28 @@ Baseline tag `rejected-v1` = `a698b23`.  The rejected deployment stays
   gitignored).  An earlier deploy from the same fresh key
   (`0xB2F702Cb7419b4d3Ee25606E1811bcC686d32994`, tx `0xaffcd146...`) was made while the
   live script was being adapted; it is superseded and is not cited as the deliverable.
+
+## STAGE 7 - submission text and the review mapping
+
+* `submission/contribution-text.md` rewritten: the detailed version now leads with the
+  exact/interval rule and the pinned SDK/lint pairing; the short version is 995
+  characters, all lowercase except the `W` in the repository URL, and is byte-identical
+  to `submission/short-version.txt`.  Both cover the fixed address, the rejected v1
+  address, the 95 tests and the live/unit split, including the consumer cross-contract
+  limitation.
+* `docs/CHANGES-SINCE-REJECTION.md`: reviewer point 1 (legacy SDK import error) and point
+  2 (within-tolerance aggregate) each mapped to the v1 line numbers, the fix commit
+  `3b85a6f`, the tests that fail before and pass after, and the live evidence.
+* README first screen now shows the purpose, the corrected rule, the pinned SDK, the lint
+  command and result, the deployment address/network and the tests/live split.
+
+## STAGE 8 - clean-worktree verification and push
+
+* Clean worktree `/tmp/opencode/clean-fix` at `f5b0d6c` (detached, no local changes):
+  `95 passed in 66.59s`, no skips.  Pinned lint there: both contracts pass, exit 0.
+* Pre-push sweep: 26 tracked files, no tracked key-like file, 3 real private keys loaded
+  for comparison (not printed), 10 64-hex candidates in the tree / 8 in all refs, none
+  matching a key, no endpoint secret, no forbidden project name.  Refs inspected:
+  `refs/heads/main`, `refs/remotes/origin/main`, `refs/tags/rejected-v1`.
+* `gh auth status`: logged in as `unifyWeb3`, repo scope.  Push `main` and the
+  `rejected-v1` tag normally (no force, no history rewrite).
